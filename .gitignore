@@ -10,6 +10,9 @@ __pycache__/
 output/
 dist/
 
+# 用户预设数据
+presets/
+
 # 敏感文件
 .env
 *.env

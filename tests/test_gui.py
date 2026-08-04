@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """GUI 冒烟测试：界面可实例化、生成流程端到端可用。
 
-注意：连续创建多个 tkinter 根窗口在部分 Windows 环境会失败，
-因此所有测试共享一个 App 实例（module-scoped fixture）。
+App 实例由 conftest.py 的 session 级 fixture 提供（共享单个 Tk 根窗口）。
 """
 from __future__ import annotations
 
@@ -22,24 +21,6 @@ except Exception:
     matplotlib_backend_ok = False
 
 
-@pytest.fixture(scope="module")
-def app():
-    """创建共享 GUI 实例；GUI 环境不可用时整个模块跳过。"""
-    if not matplotlib_backend_ok:
-        pytest.skip("matplotlib 不可用")
-    try:
-        import main
-    except Exception as exc:
-        pytest.skip(f"tkinter/matplotlib GUI 环境不可用: {exc}")
-    instance = main.App()
-    instance.withdraw()
-    yield instance
-    try:
-        instance.destroy()
-    except Exception:
-        pass
-
-
 def test_gui_can_instantiate(app):
     assert len(app.table.tree.get_children()) == 118
 
@@ -56,7 +37,8 @@ def test_gui_generate_end_to_end(app, monkeypatch):
 
     app.mode_combo.current(0)          # 重构1 · 蓝白红热力图（百分比）
     app._on_style_change()
-    app.table.set_data(main.demo_data("reconstruct_percent"))
+    app._load_demo()                   # 走真实数据路径（更新统一数据源 + 预览）
+    assert app.data, "载入示例后应有数据"
     app.out_var.set(out_dir)
     app.fmt_var.set("svg")
     app.generate()

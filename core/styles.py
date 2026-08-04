@@ -357,12 +357,14 @@ def _fmt_value(value, fmt):
     return str(value)   # raw / g
 
 
-def render_table(style: dict, data: dict, title: str = None):
+def render_table(style: dict, data: dict, title: str = None,
+                 show_cbar: bool = True):
     """渲染元素周期表（热力图或标注图），返回 matplotlib Figure。
 
-    :param style: STYLES 中的样式字典
-    :param data:  数据字典，{元素符号: 值}；标注类模式值为字符串
-    :param title: 可选图标题（仅自定义模式使用；原脚本无标题）
+    :param style:      STYLES 中的样式字典
+    :param data:       数据字典，{元素符号: 值}；标注类模式值为字符串
+    :param title:      可选图标题（仅自定义模式使用；原脚本无标题）
+    :param show_cbar:  是否显示颜色条（False 时不创建 colorbar；原脚本行为为 True）
     """
     layout = style["layout"]
     elements = build_elements(layout, data)
@@ -381,23 +383,24 @@ def render_table(style: dict, data: dict, title: str = None):
         cmap = _make_cmap(style)
         norm = _make_norm(style)
         mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
-        cbar_style = style.get("cbar_style", "standard")
-        if cbar_style == "plain":
-            # 图1：plt.colorbar(cmmapable, drawedges=False)
-            # （matplotlib 3.11 起需显式 ax，否则报错）
-            cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
-        elif cbar_style == "ax_plain":
-            # 图2/3/5：fig.colorbar(mappable, ax=ax, drawedges=False)
-            cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
-        else:
-            # 重构系列 / 图6/8/9：fraction=0.046, pad=0.04, vertical
-            cbar = fig.colorbar(mappable, ax=ax, drawedges=False,
-                                orientation="vertical", fraction=0.046, pad=0.04)
-        if style.get("cbar"):
-            cfg = style["cbar"]
-            cbar.set_ticks(cfg["ticks"])
-            cbar.set_ticklabels(cfg["labels"])
-            cbar.ax.set_yticklabels(cfg["labels"], fontsize=cfg["fontsize"])
+        if show_cbar:
+            cbar_style = style.get("cbar_style", "standard")
+            if cbar_style == "plain":
+                # 图1：plt.colorbar(cmmapable, drawedges=False)
+                # （matplotlib 3.11 起需显式 ax，否则报错）
+                cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
+            elif cbar_style == "ax_plain":
+                # 图2/3/5：fig.colorbar(mappable, ax=ax, drawedges=False)
+                cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
+            else:
+                # 重构系列 / 图6/8/9：fraction=0.046, pad=0.04, vertical
+                cbar = fig.colorbar(mappable, ax=ax, drawedges=False,
+                                    orientation="vertical", fraction=0.046, pad=0.04)
+            if style.get("cbar"):
+                cfg = style["cbar"]
+                cbar.set_ticks(cfg["ticks"])
+                cbar.set_ticklabels(cfg["labels"])
+                cbar.ax.set_yticklabels(cfg["labels"], fontsize=cfg["fontsize"])
 
     # ---- 通用绘制参数 ----
     edge = style.get("edge")
