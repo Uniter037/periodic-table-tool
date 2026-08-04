@@ -28,13 +28,43 @@ def test_scale_manual(app):
     app.scale_var.set("1.25")
     app._current_scale = None
     app._apply_scale()
-    assert app._current_scale == 1.25
+    expected = round(main.BASE_FONT_SIZE * 1.25)
+    assert app._current_scale == expected
     assert app._app_font is not None
-    assert app._app_font.cget("size") == round(main.BASE_FONT_SIZE * 1.25)
+    assert app._app_font.cget("size") == expected
     # Treeview 行高通过样式配置
     from tkinter import ttk
     rh = int(ttk.Style(app).lookup("Treeview", "rowheight"))
     assert rh >= 20
+
+
+@pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
+def test_scale_debounce(app, monkeypatch):
+    """auto 缩放防抖：字号未变（宽度小幅变化）不重复应用样式。"""
+    app.scale_mode = "auto"
+    app.scale_var.set("auto")
+    # 预置当前字号（与 1280 基准窗口对应的取整字号相同）
+    app._current_scale = round(main.BASE_FONT_SIZE * 1.0)
+    # 宽度小幅变化（1200~1360 内字号取整仍为 10）→ 不触发字体重建
+    monkeypatch.setattr(app, "winfo_width", lambda: 1300)
+    font_before = app._app_font
+    app._apply_scale()
+    assert app._app_font is font_before
+
+
+@pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
+def test_config_malformed_values(app, tmp_path, monkeypatch):
+    """畸形 config（layout/scale 为 list）不导致启动崩溃，回退默认。"""
+    import json
+    cfg_file = tmp_path / "cfg.json"
+    cfg_file.write_text(json.dumps({"layout": [], "scale": {},
+                                    "preview_ratio": "x"}), encoding="utf-8")
+    monkeypatch.setattr(main, "CONFIG_PATH", str(cfg_file))
+    app._config = {}
+    app._load_config()          # 不应抛异常
+    assert app.layout_mode == "auto"
+    assert app.scale_mode == "auto"
+    assert app.preview_ratio == 0.5
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")

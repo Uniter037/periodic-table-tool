@@ -288,9 +288,11 @@ class App(tk.Tk):
             cfg = {}
         self._config = cfg
         mode = cfg.get("layout", "auto")
-        self.layout_mode = mode if mode in dict(LAYOUT_MODES) else "auto"
+        self.layout_mode = (mode if isinstance(mode, str)
+                            and mode in dict(LAYOUT_MODES) else "auto")
         scale = cfg.get("scale", "auto")
-        self.scale_mode = scale if scale in dict(SCALE_OPTIONS) else "auto"
+        self.scale_mode = (scale if isinstance(scale, str)
+                           and scale in dict(SCALE_OPTIONS) else "auto")
         try:
             ratio = float(cfg.get("preview_ratio", 0.5))
             self.preview_ratio = ratio if ratio in PREVIEW_RATIO_OPTIONS else 0.5
@@ -388,17 +390,17 @@ class App(tk.Tk):
         return float(self.scale_mode)
 
     def _apply_scale(self):
-        """将缩放值应用到界面字号与控件大小（有变化才执行，防抖）。"""
+        """将缩放值应用到界面字号与控件大小（字号未变则跳过，防抖）。"""
         scale = self._effective_scale()
-        if self._current_scale == scale:
+        font_size = round(BASE_FONT_SIZE * scale)
+        if self._current_scale == font_size:
             return
-        self._current_scale = scale
+        self._current_scale = font_size
         if self._app_font is None:
             family = tkfont.nametofont("TkDefaultFont").cget("family")
-            self._app_font = tkfont.Font(family=family,
-                                         size=round(BASE_FONT_SIZE * scale))
+            self._app_font = tkfont.Font(family=family, size=font_size)
         else:
-            self._app_font.configure(size=round(BASE_FONT_SIZE * scale))
+            self._app_font.configure(size=font_size)
         style = ttk.Style(self)
         for s in ("TLabel", "TButton", "TCheckbutton", "TRadiobutton",
                   "TCombobox", "TEntry", "TNotebook", "TNotebook.Tab",
