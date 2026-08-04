@@ -13,6 +13,12 @@ pytest_cache/
 # 程序输出（自动改名生成）
 output/
 
+# 敏感文件（防自动同步误传）
+.env
+.env.*
+*.pem
+*.key
+
 # IDE / OS
 .idea/
 .vscode/
