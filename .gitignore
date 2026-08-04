@@ -1,27 +1,18 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-.venv/
-venv/
-env/
+*.egg-info/
 
-# pytest
+# 测试缓存
 .pytest_cache/
-pytest_cache/
 
-# 程序输出（自动改名生成）
+# 生成物
 output/
+dist/
 
-# 敏感文件（防自动同步误传）
+# 敏感文件
 .env
-.env.*
-*.pem
+*.env
 *.key
-
-# IDE / OS
-.idea/
-.vscode/
-*.swp
-.DS_Store
-Thumbs.db
+*.pem
+credentials*
