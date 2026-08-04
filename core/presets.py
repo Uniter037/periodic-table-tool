@@ -28,10 +28,12 @@ class PresetStore:
         return os.path.join(self.dir_path, f"{name}.json")
 
     def save(self, name: str, payload: dict) -> str:
-        """保存预设，返回文件路径。"""
+        """保存预设（临时文件 + 原子替换，避免中断损坏既有预设），返回文件路径。"""
         path = self._path_for(name)
-        with open(path, "w", encoding="utf-8") as fh:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
         return path
 
     def load(self, name: str) -> dict:

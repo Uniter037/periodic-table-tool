@@ -76,7 +76,12 @@ class PreviewCanvas(tk.Frame):
             except Exception:
                 pass
             self.canvas = None
+        # 关闭旧 figure，避免 matplotlib 状态机持有导致内存累积
+        old_fig = self.fig
         self.fig = fig
+        if old_fig is not None and old_fig is not fig:
+            import matplotlib.pyplot as plt
+            plt.close(old_fig)
         self.hit_map = hit_map or {}
         if self._CanvasCls is None:
             if self._placeholder is None:
@@ -94,7 +99,7 @@ class PreviewCanvas(tk.Frame):
         self.canvas.draw()
 
     def _on_click(self, event):
-        if event.inaxes is None:
+        if event.inaxes is None or event.button != 1:
             return
         sym = self.hit_test(event.xdata, event.ydata)
         if sym and self.on_click:
@@ -542,6 +547,8 @@ class App(tk.Tk):
             self.table.set_data(self.data)
             self.status_var.set(f"已清除 {sym}")
             self._refresh_preview()
+        else:
+            self.status_var.set("提示：请先在预览图中点击一个元素格子。")
 
     # ------------------------------------------------------------------
     # 自定义颜色
@@ -603,6 +610,19 @@ class App(tk.Tk):
         self.status_var.set(f"已保存预设 {name} → {path}")
         self._preset_refresh()
 
+    def _sanitize_colors(self, value) -> list:
+        """校验预设中的自定义颜色：须为列表且每项为 3 个 0~1 数值，否则回退默认。"""
+        if not isinstance(value, (list, tuple)):
+            return list(DEFAULT_COLORS)
+        colors = []
+        for item in value:
+            if (isinstance(item, (list, tuple)) and len(item) == 3 and
+                    all(isinstance(c, (int, float)) and 0 <= c <= 1 for c in item)):
+                colors.append(tuple(float(c) for c in item))
+            else:
+                return list(DEFAULT_COLORS)
+        return colors if len(colors) >= 2 else list(DEFAULT_COLORS)
+
     def _preset_load(self):
         name = self.preset_combo.get() or self.preset_name_var.get().strip()
         if not name:
@@ -610,26 +630,28 @@ class App(tk.Tk):
             return
         try:
             payload = self.presets.load(name)
+            # 应用预设（对损坏/篡改的 JSON 整体兜底，避免 tkinter 回调 traceback）
+            mode_id = payload.get("mode_id", "custom")
+            names = [s["name"] for s in STYLES.values()]
+            ids = list(STYLES.keys())
+            if mode_id in ids:
+                self.mode_combo.current(ids.index(mode_id))
+                self._on_style_change()
+            params = payload.get("params", {})
+            if isinstance(params, dict):
+                for k, v in params.items():
+                    if k in self.param_vars:
+                        self.param_vars[k].set(str(v))
+            self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
+            self.custom_colors = self._sanitize_colors(payload.get("custom_colors"))
+            self._build_color_row(self.color_frame)
+            raw_data = payload.get("data", {})
+            self.data = raw_data if isinstance(raw_data, dict) else {}
+            self.table.set_data(self.data)
+            self.status_var.set(f"已加载预设 {name}")
+            self._refresh_preview()
         except Exception as exc:
             messagebox.showerror("加载失败", str(exc))
-            return
-        # 应用预设
-        mode_id = payload.get("mode_id", "custom")
-        names = [s["name"] for s in STYLES.values()]
-        ids = list(STYLES.keys())
-        if mode_id in ids:
-            self.mode_combo.current(ids.index(mode_id))
-            self._on_style_change()
-        for k, v in payload.get("params", {}).items():
-            if k in self.param_vars:
-                self.param_vars[k].set(str(v))
-        self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
-        self.custom_colors = list(payload.get("custom_colors", DEFAULT_COLORS))
-        self._build_color_row(self.color_frame)
-        self.data = dict(payload.get("data", {}))
-        self.table.set_data(self.data)
-        self.status_var.set(f"已加载预设 {name}")
-        self._refresh_preview()
 
     def _preset_delete(self):
         name = self.preset_combo.get() or self.preset_name_var.get().strip()
@@ -661,16 +683,31 @@ class App(tk.Tk):
             hit[(x, y, x + 1, y + 1)] = symbol
         return hit
 
+    def _preview_data(self) -> dict:
+        """与 generate() 使用相同的数据校验逻辑（保证预览与输出一致）。"""
+        style = STYLES[self._current_style_id()]
+        if style.get("kind") == "labels":
+            return {s: v for s, v in self.data.items() if s in known_symbols()}
+        data, _, _ = validate_data(self.data)
+        return {s: v for s, v in data.items() if not isinstance(v, str)}
+
     def _refresh_preview(self):
         style_id = self._current_style_id()
         if style_id == "cmap_preview":
-            # 本模式无周期表预览，仅提示
+            # 本模式无周期表预览：显示占位说明，避免残留旧预览误导
+            import matplotlib.pyplot as plt
+            empty_fig = plt.figure(figsize=(8, 3))
+            ax = empty_fig.add_subplot(111)
+            ax.text(0.5, 0.5, "颜色映射预览模式：点击「生成图片」输出全部色图预览",
+                    ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            self.preview.show(empty_fig, {})
             return
         try:
             style = self._current_work_style()
             title = (self.param_vars["title"].get().strip()
                      if style.get("customizable") else "")
-            fig = render_table(style, self.data, title=title or None,
+            fig = render_table(style, self._preview_data(), title=title or None,
                                show_cbar=self.show_cbar_var.get())
             self.preview.show(fig, self._build_hit_map())
         except Exception as exc:
