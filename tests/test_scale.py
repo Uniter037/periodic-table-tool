@@ -43,11 +43,13 @@ def test_scale_debounce(app, monkeypatch):
     """auto 缩放防抖：字号未变（宽度小幅变化）不重复应用样式。"""
     app.scale_mode = "auto"
     app.scale_var.set("auto")
-    # 预置当前字号（与 1280 基准窗口对应的取整字号相同）
-    app._current_scale = round(main.BASE_FONT_SIZE * 1.0)
+    # 先确保字体已创建（避免 None is None 使断言失效）
+    app._current_scale = None
+    app._apply_scale()
+    font_before = app._app_font
+    assert font_before is not None
     # 宽度小幅变化（1200~1360 内字号取整仍为 10）→ 不触发字体重建
     monkeypatch.setattr(app, "winfo_width", lambda: 1300)
-    font_before = app._app_font
     app._apply_scale()
     assert app._app_font is font_before
 

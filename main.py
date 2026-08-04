@@ -263,7 +263,7 @@ class App(tk.Tk):
         self._last_preview_size = (0, 0)     # 预览画布上次尺寸（防抖）
         self._app_font = None
         self._load_config()
-        if self._config.get("geometry"):
+        if isinstance(self._config.get("geometry"), str):
             try:
                 self.geometry(self._config["geometry"])
             except tk.TclError:
