@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""打包发行包：生成 dist/periodic-table-tool-v1.0.0.zip。"""
+"""打包发行包：生成 dist/periodic-table-tool-v{VERSION}.zip。"""
 import os
 import zipfile
 
