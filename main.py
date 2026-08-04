@@ -22,6 +22,7 @@ import sys
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
+import tkinter.font as tkfont
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
@@ -46,6 +47,19 @@ LAYOUT_MODES = (
     ("split-h", "左右分栏"),
     ("split-v", "上下分栏"),
 )
+# 界面缩放选项：auto 随窗口宽度，或手动固定比例
+SCALE_OPTIONS = (
+    ("auto", "自动（随窗口）"),
+    ("0.8", "80%"),
+    ("1.0", "100%"),
+    ("1.25", "125%"),
+    ("1.5", "150%"),
+)
+# 预览区域占右侧上部的高度比例（可手动调节）
+PREVIEW_RATIO_OPTIONS = (0.4, 0.5, 0.6)
+BASE_FONT_SIZE = 10          # 100% 缩放时的基准字号
+BASE_WINDOW_WIDTH = 1280     # auto 缩放的基准窗口宽度
+SCALE_RANGE = (0.8, 1.5)     # auto 缩放的上下限
 
 
 def _rgb_to_hex(rgb) -> str:
@@ -243,6 +257,11 @@ class App(tk.Tk):
         self._right = None
         self._current_layout = None          # 当前实际生效的布局
         self.layout_mode = "auto"            # 用户选择：auto / split-h / split-v
+        self.scale_mode = "auto"             # 界面缩放：auto 或 "0.8"/"1.0"/"1.25"/"1.5"
+        self.preview_ratio = 0.5             # 预览区域高度占比（右侧上部）
+        self._current_scale = None           # 已应用的缩放值（防抖）
+        self._last_preview_size = (0, 0)     # 预览画布上次尺寸（防抖）
+        self._app_font = None
         self._load_config()
         if self._config.get("geometry"):
             try:
@@ -258,7 +277,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _load_config(self):
-        """读取用户配置（布局模式、窗口尺寸）。"""
+        """读取用户配置（布局模式、窗口尺寸、界面缩放、预览比例）。"""
         cfg = {}
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
@@ -270,12 +289,21 @@ class App(tk.Tk):
         self._config = cfg
         mode = cfg.get("layout", "auto")
         self.layout_mode = mode if mode in dict(LAYOUT_MODES) else "auto"
+        scale = cfg.get("scale", "auto")
+        self.scale_mode = scale if scale in dict(SCALE_OPTIONS) else "auto"
+        try:
+            ratio = float(cfg.get("preview_ratio", 0.5))
+            self.preview_ratio = ratio if ratio in PREVIEW_RATIO_OPTIONS else 0.5
+        except (TypeError, ValueError):
+            self.preview_ratio = 0.5
 
     def _save_config(self):
-        """保存用户配置（布局模式、窗口尺寸）。"""
+        """保存用户配置（布局模式、窗口尺寸、界面缩放、预览比例）。"""
         cfg = {
             "layout": self.layout_mode,
             "geometry": self.geometry(),
+            "scale": self.scale_mode,
+            "preview_ratio": self.preview_ratio,
         }
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
@@ -340,6 +368,92 @@ class App(tk.Tk):
         if event.widget is not self:
             return
         self._apply_layout()
+        self._apply_scale()
+        self._resize_preview()
+
+    # ------------------------------------------------------------------
+    # 界面缩放与预览自适应
+    # ------------------------------------------------------------------
+    def _effective_scale(self) -> float:
+        """当前缩放值：auto 模式随窗口宽度 clamp 到 SCALE_RANGE，手动用固定值。"""
+        if self.scale_mode == "auto":
+            try:
+                width = self.winfo_width()
+            except tk.TclError:
+                width = BASE_WINDOW_WIDTH
+            if width <= 1:
+                return 1.0
+            return max(SCALE_RANGE[0],
+                       min(SCALE_RANGE[1], width / BASE_WINDOW_WIDTH))
+        return float(self.scale_mode)
+
+    def _apply_scale(self):
+        """将缩放值应用到界面字号与控件大小（有变化才执行，防抖）。"""
+        scale = self._effective_scale()
+        if self._current_scale == scale:
+            return
+        self._current_scale = scale
+        if self._app_font is None:
+            family = tkfont.nametofont("TkDefaultFont").cget("family")
+            self._app_font = tkfont.Font(family=family,
+                                         size=round(BASE_FONT_SIZE * scale))
+        else:
+            self._app_font.configure(size=round(BASE_FONT_SIZE * scale))
+        style = ttk.Style(self)
+        for s in ("TLabel", "TButton", "TCheckbutton", "TRadiobutton",
+                  "TCombobox", "TEntry", "TNotebook", "TNotebook.Tab",
+                  "TLabelframe", "TLabelframe.Label"):
+            try:
+                style.configure(s, font=self._app_font)
+            except tk.TclError:
+                pass
+        try:
+            style.configure("Treeview", font=self._app_font,
+                            rowheight=max(20, round(24 * scale)))
+            style.configure("Treeview.Heading", font=self._app_font)
+        except tk.TclError:
+            pass
+        self._resize_preview()
+
+    def _apply_preview_ratio(self):
+        """按预览区域比例调整右侧上（预览）/下（数据）区域的权重。"""
+        if self._right is None:
+            return
+        self._right.rowconfigure(0, weight=int(self.preview_ratio * 10))
+        self._right.rowconfigure(1, weight=int((1 - self.preview_ratio) * 10))
+
+    def _resize_preview(self):
+        """预览画布随窗口尺寸自适应（figure 重设尺寸，防抖）。"""
+        pv = self.preview
+        if pv.canvas is None or pv.fig is None:
+            return
+        try:
+            w = pv.winfo_width()
+            h = pv.winfo_height()
+        except tk.TclError:
+            return
+        if w <= 10 or h <= 10 or (w, h) == self._last_preview_size:
+            return
+        self._last_preview_size = (w, h)
+        try:
+            dpi = self.winfo_fpixels("1i")
+            pv.fig.set_size_inches(max(w / dpi, 4.0), max(h / dpi, 2.0))
+            pv.fig.tight_layout()
+            pv.canvas.draw()
+        except Exception:
+            pass
+
+    def _on_scale_change(self, *args):
+        self.scale_mode = self.scale_var.get()
+        self._current_scale = None          # 强制重新应用
+        self._apply_scale()
+        self._save_config()
+
+    def _on_ratio_change(self, *args):
+        self.preview_ratio = float(self.ratio_var.get())
+        self._apply_preview_ratio()
+        self._save_config()
+        self._resize_preview()
 
     def _on_layout_mode_change(self, *args):
         self.layout_mode = self.layout_var.get()
@@ -349,7 +463,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _build_ui(self):
-        # 视图菜单（布局设置）
+        # 视图菜单（布局设置、界面缩放、预览比例）
         menubar = tk.Menu(self)
         view_menu = tk.Menu(menubar, tearoff=0)
         self.layout_var = tk.StringVar(value=self.layout_mode)
@@ -357,6 +471,24 @@ class App(tk.Tk):
             view_menu.add_radiobutton(
                 label=label, variable=self.layout_var, value=mode,
                 command=self._on_layout_mode_change)
+        view_menu.add_separator()
+        # 界面缩放
+        self.scale_var = tk.StringVar(value=self.scale_mode)
+        scale_menu = tk.Menu(view_menu, tearoff=0)
+        for val, label in SCALE_OPTIONS:
+            scale_menu.add_radiobutton(
+                label=label, variable=self.scale_var, value=val,
+                command=self._on_scale_change)
+        view_menu.add_cascade(label="界面缩放（字号/控件）", menu=scale_menu)
+        # 预览区域比例
+        self.ratio_var = tk.DoubleVar(value=self.preview_ratio)
+        ratio_menu = tk.Menu(view_menu, tearoff=0)
+        for r in PREVIEW_RATIO_OPTIONS:
+            ratio_menu.add_radiobutton(
+                label=f"预览区 {int(r * 100)}% / 数据区 {int((1 - r) * 100)}%",
+                variable=self.ratio_var, value=r,
+                command=self._on_ratio_change)
+        view_menu.add_cascade(label="预览区域大小", menu=ratio_menu)
         menubar.add_cascade(label="视图", menu=view_menu)
         self.config(menu=menubar)
 
@@ -540,6 +672,8 @@ class App(tk.Tk):
 
         # 应用初始布局（读自用户配置）
         self._apply_layout()
+        self._apply_preview_ratio()
+        self._apply_scale()
 
     # ------------------------------------------------------------------
     def _build_color_row(self, parent):
