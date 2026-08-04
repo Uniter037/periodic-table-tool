@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import webbrowser
@@ -37,6 +38,14 @@ from core.elements_data import ALL_SYMBOLS
 SYMBOLS = set(ALL_SYMBOLS)
 FORMATS = ["svg", "png", "pdf"]
 DEFAULT_COLORS = [(0.1726, 0.2941, 0.4588), (1, 1, 1), (0.5686, 0.1333, 0.1098)]
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".periodic-table-tool.json")
+# 自动布局：窗口宽度低于该值时切换为上下分栏
+AUTO_SPLIT_THRESHOLD = 1150
+LAYOUT_MODES = (
+    ("auto", "自动调整（随窗口宽度）"),
+    ("split-h", "左右分栏"),
+    ("split-v", "上下分栏"),
+)
 
 
 def _rgb_to_hex(rgb) -> str:
@@ -229,20 +238,131 @@ class App(tk.Tk):
         self.data = {}                       # 统一数据源 {符号: 值}
         self.custom_colors = list(DEFAULT_COLORS)
         self.presets = PresetStore(os.path.join(PROJECT_ROOT, "presets"))
+        self._main = None
+        self._left = None
+        self._right = None
+        self._current_layout = None          # 当前实际生效的布局
+        self.layout_mode = "auto"            # 用户选择：auto / split-h / split-v
+        self._load_config()
+        if self._config.get("geometry"):
+            try:
+                self.geometry(self._config["geometry"])
+            except tk.TclError:
+                pass
 
         self._build_ui()
         self._on_style_change()
+        # 随窗口大小自动调整布局
+        self.bind("<Configure>", self._on_window_resize)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------------
+    def _load_config(self):
+        """读取用户配置（布局模式、窗口尺寸）。"""
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except Exception:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        self._config = cfg
+        mode = cfg.get("layout", "auto")
+        self.layout_mode = mode if mode in dict(LAYOUT_MODES) else "auto"
+
+    def _save_config(self):
+        """保存用户配置（布局模式、窗口尺寸）。"""
+        cfg = {
+            "layout": self.layout_mode,
+            "geometry": self.geometry(),
+        }
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _on_close(self):
+        self._save_config()
+        self.destroy()
+
+    # ------------------------------------------------------------------
+    # 布局
+    # ------------------------------------------------------------------
+    def _effective_layout(self) -> str:
+        """auto 模式下按当前窗口宽度决定实际布局。"""
+        if self.layout_mode == "auto":
+            try:
+                width = self.winfo_width()
+            except tk.TclError:
+                width = 0
+            return "split-v" if 0 < width < AUTO_SPLIT_THRESHOLD else "split-h"
+        return self.layout_mode
+
+    def _apply_layout(self):
+        """根据布局模式重新摆放控制面板与主区（左右/上下）。"""
+        if self._main is None:
+            return
+        layout = self._effective_layout()
+        if layout == self._current_layout:
+            return
+        self._current_layout = layout
+        main = self._main
+        if layout == "split-h":
+            main.columnconfigure(0, weight=0)
+            main.columnconfigure(1, weight=1)
+            main.rowconfigure(0, weight=0)
+            main.rowconfigure(1, weight=1)
+            self._left.grid(row=0, column=0, rowspan=2,
+                            sticky="ns", padx=(0, 8))
+            self._right.grid(row=0, column=1, sticky="nsew")
+        else:   # split-v：上下分栏
+            main.columnconfigure(0, weight=1)
+            main.columnconfigure(1, weight=0)
+            main.rowconfigure(0, weight=0)
+            main.rowconfigure(1, weight=1)
+            self._left.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            self._right.grid(row=1, column=0, sticky="nsew")
+        # 状态栏始终占满底部
+        for child in main.winfo_children():
+            if child is self._status:
+                child.grid(row=2, column=0, columnspan=2, sticky="ew",
+                           pady=(6, 0))
+
+    def _on_window_resize(self, event):
+        if event.widget is not self:
+            return
+        self._apply_layout()
+
+    def _on_layout_mode_change(self, *args):
+        self.layout_mode = self.layout_var.get()
+        self._apply_layout()
+        self._save_config()
+        self.status_var.set(f"布局：{dict(LAYOUT_MODES)[self.layout_mode]}")
 
     # ------------------------------------------------------------------
     def _build_ui(self):
+        # 视图菜单（布局设置）
+        menubar = tk.Menu(self)
+        view_menu = tk.Menu(menubar, tearoff=0)
+        self.layout_var = tk.StringVar(value=self.layout_mode)
+        for mode, label in LAYOUT_MODES:
+            view_menu.add_radiobutton(
+                label=label, variable=self.layout_var, value=mode,
+                command=self._on_layout_mode_change)
+        menubar.add_cascade(label="视图", menu=view_menu)
+        self.config(menu=menubar)
+
         main = ttk.Frame(self, padding=8)
         main.pack(fill="both", expand=True)
         main.columnconfigure(1, weight=1)
         main.rowconfigure(1, weight=1)
+        self._main = main
 
         # ================= 左侧控制面板 =================
         left = ttk.LabelFrame(main, text="绘图设置", padding=8)
-        left.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 8))
+        self._left = left
 
         ttk.Label(left, text="绘图模式").grid(row=0, column=0, sticky="w")
         self.mode_var = tk.StringVar()
@@ -343,7 +463,7 @@ class App(tk.Tk):
 
         # ================= 右侧：预览 + 数据 =================
         right = ttk.Frame(main)
-        right.grid(row=0, column=1, sticky="nsew")
+        self._right = right
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
 
@@ -407,9 +527,13 @@ class App(tk.Tk):
 
         # ================= 状态栏 =================
         status = ttk.Frame(main)
+        self._status = status
         status.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(status, textvariable=self.status_var, foreground="#333333").pack(side="left")
+
+        # 应用初始布局（读自用户配置）
+        self._apply_layout()
 
     # ------------------------------------------------------------------
     def _build_color_row(self, parent):

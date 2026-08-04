@@ -4,7 +4,7 @@ import os
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 DIST_DIR = os.path.join(ROOT, "dist")
 ZIP_NAME = f"periodic-table-tool-v{VERSION}.zip"
 
