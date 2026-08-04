@@ -229,7 +229,7 @@ class DataTable(tk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工具 v1.1")
+        self.title("元素周期表绘图工具 v1.2")
         self.geometry("1280x800")
         self.minsize(1080, 640)
 
@@ -297,7 +297,10 @@ class App(tk.Tk):
                 width = self.winfo_width()
             except tk.TclError:
                 width = 0
-            return "split-v" if 0 < width < AUTO_SPLIT_THRESHOLD else "split-h"
+            if width <= 1:
+                # 窗口尚未映射：用默认宽布局，避免启动闪变
+                return "split-h"
+            return "split-v" if width < AUTO_SPLIT_THRESHOLD else "split-h"
         return self.layout_mode
 
     def _apply_layout(self):
@@ -315,15 +318,18 @@ class App(tk.Tk):
             main.rowconfigure(0, weight=0)
             main.rowconfigure(1, weight=1)
             self._left.grid(row=0, column=0, rowspan=2,
-                            sticky="ns", padx=(0, 8))
-            self._right.grid(row=0, column=1, sticky="nsew")
-        else:   # split-v：上下分栏
+                            sticky="ns", padx=(0, 8), pady=0)
+            self._right.grid(row=0, column=1, rowspan=1,
+                             sticky="nsew", padx=0, pady=0)
+        else:   # split-v：上下分栏（注意 rowspan 必须显式重置，grid 配置是增量更新的）
             main.columnconfigure(0, weight=1)
             main.columnconfigure(1, weight=0)
             main.rowconfigure(0, weight=0)
             main.rowconfigure(1, weight=1)
-            self._left.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-            self._right.grid(row=1, column=0, sticky="nsew")
+            self._left.grid(row=0, column=0, rowspan=1,
+                            sticky="ew", padx=0, pady=(0, 6))
+            self._right.grid(row=1, column=0, rowspan=1,
+                             sticky="nsew", padx=0, pady=0)
         # 状态栏始终占满底部
         for child in main.winfo_children():
             if child is self._status:

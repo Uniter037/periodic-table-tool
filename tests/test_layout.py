@@ -20,30 +20,44 @@ def _gui_available():
         return False
 
 
+try:
+    import main
+except Exception:
+    main = None
+
+
 # ---------------------------------------------------------------------------
 # 布局切换与自动调整（GUI）
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_layout_switch_manual(app):
-    """手动选择左右/上下布局后，控件 grid 位置随之变化。"""
+    """手动选择左右/上下布局后，控件 grid 位置随之变化（含 rowspan 无残留）。"""
     # 左右分栏：left 在 column 0，right 在 column 1
     app.layout_mode = "split-h"
     app.layout_var.set("split-h")
     app._apply_layout()
     assert app._left.grid_info()["column"] == 0
+    assert app._left.grid_info()["rowspan"] == 2
     assert app._right.grid_info()["column"] == 1
-    # 上下分栏：left 在 row 0，right 在 row 1
+    # 上下分栏：left 在 row 0，right 在 row 1；rowspan 必须重置为 1（无重叠）
     app.layout_mode = "split-v"
     app.layout_var.set("split-v")
     app._apply_layout()
     assert app._left.grid_info()["row"] == 0
+    assert app._left.grid_info()["rowspan"] == 1
     assert app._right.grid_info()["row"] == 1
     assert app._right.grid_info()["column"] == 0
+    assert app._right.grid_info()["rowspan"] == 1
+    # 再切回左右：rowspan 恢复 2
+    app.layout_mode = "split-h"
+    app.layout_var.set("split-h")
+    app._apply_layout()
+    assert app._left.grid_info()["rowspan"] == 2
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_layout_auto_threshold(app, monkeypatch):
-    """自动模式：窗口宽度低于阈值用上下分栏，高于用左右分栏。"""
+    """自动模式：窗口宽度低于阈值用上下分栏，高于用左右分栏（含边界值）。"""
     app.layout_mode = "auto"
     app.layout_var.set("auto")
     # 模拟窄窗口
@@ -54,6 +68,15 @@ def test_layout_auto_threshold(app, monkeypatch):
     monkeypatch.setattr(app, "winfo_width", lambda: 1400)
     app._apply_layout()
     assert app._right.grid_info()["column"] == 1   # 左右
+    # 边界值：恰好等于阈值 → 左右分栏
+    monkeypatch.setattr(app, "winfo_width",
+                        lambda: main.AUTO_SPLIT_THRESHOLD)
+    app._apply_layout()
+    assert app._right.grid_info()["column"] == 1
+    # 未映射窗口（width<=1）→ 默认左右，避免启动闪变
+    monkeypatch.setattr(app, "winfo_width", lambda: 1)
+    app._apply_layout()
+    assert app._right.grid_info()["column"] == 1
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
