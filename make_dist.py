@@ -19,6 +19,7 @@ INCLUDE = [
     "core/elements_data.py",
     "core/styles.py",
     "core/dataio.py",
+    "core/presets.py",
     "core/saver.py",
 ]
 EXCLUDE_PARTS = ("__pycache__",)
