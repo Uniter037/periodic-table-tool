@@ -61,6 +61,22 @@ BASE_FONT_SIZE = 10          # 100% 缩放时的基准字号
 BASE_WINDOW_WIDTH = 1280     # auto 缩放的基准窗口宽度
 SCALE_RANGE = (0.8, 1.5)     # auto 缩放的上下限
 
+# 自定义模式高级参数：GUI 中文标签 → 样式值（反向映射用于回填）
+LAYOUT_CHOICES = {"镧锕三行块（重构）": "reconstructed",
+                  "展开 8-9 行（经典）": "classic"}
+KIND_CHOICES = {"热力图": "heatmap", "标注图（文本）": "labels"}
+FONT_CHOICES = {"Arial": "Arial", "Helvetica": "Helvetica",
+                "DejaVu Sans": "DejaVu Sans"}
+EDGE_CHOICES = {"无边框": "none", "黑色细线": "black"}
+EMPTY_CHOICES = {"浅灰": "#f0f0f0", "白色": "white", "透明": "none"}
+FMT_CHOICES = {"百分比 2 位": "percent2", "两位小数": "2f", "三位小数": "3f",
+               "四位小数": "4f", "原始": "raw"}
+DPI_CHOICES = {"72": 72, "100": 100, "150": 150, "300": 300}
+_REV = {name: {v: k for k, v in m.items()} for name, m in
+        (("layout", LAYOUT_CHOICES), ("kind", KIND_CHOICES),
+         ("font", FONT_CHOICES), ("edge", EDGE_CHOICES),
+         ("empty", EMPTY_CHOICES), ("fmt", FMT_CHOICES), ("dpi", DPI_CHOICES))}
+
 
 def _rgb_to_hex(rgb) -> str:
     r, g, b = (int(round(c * 255)) for c in rgb)
@@ -244,8 +260,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("元素周期表绘图工具 v1.2")
-        self.geometry("1280x800")
-        self.minsize(1080, 640)
+        self.geometry("1280x920")
+        self.minsize(1080, 720)
 
         self.out_dir = os.path.join(PROJECT_ROOT, "output")
         self.last_output = None
@@ -516,28 +532,42 @@ class App(tk.Tk):
         self.file_label = ttk.Label(left, text="", foreground="#666666", wraplength=280)
         self.file_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 6))
 
-        # 参数
+        # 参数（自定义模式全部可调；其他模式只读显示）
         params = [
-            ("cmap", "颜色映射"),
-            ("vmin", "最小值 vmin"),
-            ("vcenter", "中心值 vcenter"),
-            ("vmax", "最大值 vmax"),
-            ("fmt", "数值格式"),
-            ("title", "图标题"),
+            ("cmap", "颜色映射", "entry"),
+            ("vmin", "最小值 vmin", "entry"),
+            ("vcenter", "中心值 vcenter", "entry"),
+            ("vmax", "最大值 vmax", "entry"),
+            ("fmt", "数值格式", "combo", list(FMT_CHOICES)),
+            ("layout", "元素布局", "combo", list(LAYOUT_CHOICES)),
+            ("kind", "图表类型", "combo", list(KIND_CHOICES)),
+            ("font", "字体", "combo", list(FONT_CHOICES)),
+            ("edge", "格子边框", "combo", list(EDGE_CHOICES)),
+            ("empty", "空值格颜色", "combo", list(EMPTY_CHOICES)),
+            ("dpi", "输出分辨率 dpi", "combo", list(DPI_CHOICES)),
+            ("figsize", "图尺寸(宽x高 英寸)", "entry"),
+            ("title", "图标题", "entry"),
         ]
         self.param_vars = {}
         self.param_entries = {}
-        for r, (key, label) in enumerate(params, start=2):
+        for r, spec in enumerate(params, start=2):
+            key, label = spec[0], spec[1]
             ttk.Label(left, text=label).grid(row=r, column=0, sticky="w")
             var = tk.StringVar()
-            entry = ttk.Entry(left, textvariable=var, width=24)
-            entry.grid(row=r, column=1, columnspan=3, sticky="we", pady=2)
-            entry.bind("<KeyRelease>", lambda e: self._refresh_preview())
+            if spec[2] == "combo":
+                widget = ttk.Combobox(left, textvariable=var, state="readonly",
+                                      values=spec[3], width=20)
+                widget.bind("<<ComboboxSelected>>",
+                            lambda e: self._refresh_preview())
+            else:
+                widget = ttk.Entry(left, textvariable=var, width=24)
+                widget.bind("<KeyRelease>", lambda e: self._refresh_preview())
+            widget.grid(row=r, column=1, columnspan=3, sticky="we", pady=1)
             self.param_vars[key] = var
-            self.param_entries[key] = entry
+            self.param_entries[key] = widget
 
         # 颜色条开关
-        r = 8
+        r = 15
         self.show_cbar_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(left, text="显示颜色条", variable=self.show_cbar_var,
                         command=self._refresh_preview).grid(
@@ -712,12 +742,29 @@ class App(tk.Tk):
         self.param_vars["vmin"].set(str(norm[1]) if norm else "")
         self.param_vars["vcenter"].set(str(norm[2]) if norm and norm[0] == "twoslope" else "")
         self.param_vars["vmax"].set(str(norm[-1]) if norm else "")
-        self.param_vars["fmt"].set(style.get("fmt", ""))
+        # 组合类参数：样式值 → 中文标签回填（不在映射中则显示原始值/默认）
+        self.param_vars["fmt"].set(_REV["fmt"].get(style.get("fmt", ""),
+                                                   style.get("fmt", "")))
+        self.param_vars["layout"].set(_REV["layout"].get(style.get("layout", "classic")))
+        self.param_vars["kind"].set(_REV["kind"].get(style.get("kind", "heatmap")))
+        self.param_vars["font"].set(_REV["font"].get(style.get("font", "Arial"),
+                                                     style.get("font", "Arial")))
+        edge = style.get("edge")
+        self.param_vars["edge"].set(_REV["edge"].get(
+            "none" if edge is None else "black"))
+        self.param_vars["empty"].set(_REV["empty"].get(style.get("empty", "#f0f0f0"),
+                                                       style.get("empty", "#f0f0f0")))
+        self.param_vars["dpi"].set("100")
+        self.param_vars["figsize"].set("10x5")
         self.param_vars["title"].set("")
 
         editable = style.get("customizable", False)
-        for key in ("cmap", "vmin", "vcenter", "vmax", "fmt"):
-            self.param_entries[key].config(state="normal" if editable else "readonly")
+        for key in self.param_entries:
+            w = self.param_entries[key]
+            if editable:
+                w.config(state="normal" if isinstance(w, ttk.Entry) else "readonly")
+            else:
+                w.config(state="disabled")
         # 自定义颜色仅自定义模式可用
         for b in self.color_buttons:
             b.config(state="normal" if editable else "disabled")
@@ -857,7 +904,9 @@ class App(tk.Tk):
         return {
             "mode_id": self._current_style_id(),
             "params": {k: self.param_vars[k].get() for k in
-                       ("cmap", "vmin", "vcenter", "vmax", "fmt", "title")},
+                       ("cmap", "vmin", "vcenter", "vmax", "fmt",
+                        "layout", "kind", "font", "edge", "empty",
+                        "dpi", "figsize", "title")},
             "show_cbar": self.show_cbar_var.get(),
             "custom_colors": self.custom_colors,
             "data": self.data,
@@ -934,7 +983,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _build_hit_map(self) -> dict:
         """构建元素格子坐标 → 符号 的命中表（与渲染布局一致）。"""
-        style = STYLES[self._current_style_id()]
+        style = self._current_work_style()
         layout = style["layout"]
         elements = build_elements(layout, {})
         bounds = xy_bounds_for(layout)
@@ -951,8 +1000,8 @@ class App(tk.Tk):
 
     def _preview_data(self) -> dict:
         """与 generate() 使用相同的数据校验逻辑（保证预览与输出一致）。"""
-        style = STYLES[self._current_style_id()]
-        if style.get("kind") == "labels":
+        work = self._current_work_style()
+        if work.get("kind") == "labels":
             return {s: v for s, v in self.data.items() if s in known_symbols()}
         data, _, _ = validate_data(self.data)
         return {s: v for s, v in data.items() if not isinstance(v, str)}
@@ -974,7 +1023,8 @@ class App(tk.Tk):
             title = (self.param_vars["title"].get().strip()
                      if style.get("customizable") else "")
             fig = render_table(style, self._preview_data(), title=title or None,
-                               show_cbar=self.show_cbar_var.get())
+                               show_cbar=self.show_cbar_var.get(),
+                               figsize=style.get("figsize", (10, 5)))
             self.preview.show(fig, self._build_hit_map())
         except Exception as exc:
             self.status_var.set(f"预览失败：{exc}")
@@ -996,7 +1046,8 @@ class App(tk.Tk):
                 messagebox.showwarning("提示", "请先输入数据：表格编辑、图形化标注、导入文件或载入示例。")
                 return
 
-            if style.get("kind") == "labels":
+            work_style = self._current_work_style()
+            if work_style.get("kind") == "labels":
                 data = {s: v for s, v in self.data.items() if s in known_symbols()}
                 unknown = [s for s in self.data if s not in known_symbols()]
                 if unknown:
@@ -1010,14 +1061,16 @@ class App(tk.Tk):
                 if bad:
                     messagebox.showwarning("非法值", f"以下数据不是有效数字，将被忽略：{bad}")
 
-            work_style = self._current_work_style()
             fmt = self.fmt_var.get()
             title = (self.param_vars["title"].get().strip()
                      if style.get("customizable") else "")
             fig = render_table(work_style, data, title=title or None,
-                               show_cbar=self.show_cbar_var.get())
-            path = save_figure(fig, out_dir, "periodic_table", fmt,
-                               bbox_inches="tight" if work_style.get("bbox_tight", True) else None)
+                               show_cbar=self.show_cbar_var.get(),
+                               figsize=work_style.get("figsize", (10, 5)))
+            path = save_figure(
+                fig, out_dir, "periodic_table", fmt,
+                bbox_inches="tight" if work_style.get("bbox_tight", True) else None,
+                dpi=work_style.get("dpi", 100))
             import matplotlib.pyplot as plt
             plt.close(fig)
 
@@ -1036,16 +1089,23 @@ class App(tk.Tk):
 
     def _apply_custom_params(self, style):
         import copy
+        import math
         work = copy.deepcopy(style)
         cmap_name = self.param_vars["cmap"].get().strip()
         try:
             vmin = float(self.param_vars["vmin"].get())
             vmax = float(self.param_vars["vmax"].get())
-        except ValueError as exc:
-            raise ValueError("vmin / vmax 必须是数字") from exc
-        center_text = self.param_vars["vcenter"].get().strip()
-        work["norm"] = ("twoslope", vmin, float(center_text), vmax) if center_text else ("normalize", vmin, vmax)
-        work["fmt"] = self.param_vars["fmt"].get().strip() or "3f"
+            center_text = self.param_vars["vcenter"].get().strip()
+            vcenter = float(center_text) if center_text else None
+        except (ValueError, TypeError) as exc:
+            raise ValueError("vmin / vcenter / vmax 必须是数字") from exc
+        # 拒绝 NaN / Infinity，避免污染 norm 与渲染
+        if (not math.isfinite(vmin) or not math.isfinite(vmax) or
+                (vcenter is not None and not math.isfinite(vcenter))):
+            raise ValueError("vmin / vcenter / vmax 必须是有限数值")
+        work["norm"] = (("twoslope", vmin, vcenter, vmax) if vcenter is not None
+                        else ("normalize", vmin, vmax))
+        work["fmt"] = FMT_CHOICES.get(self.param_vars["fmt"].get(), "3f")
         # 自定义颜色优先；否则按输入的名称取预置色图
         if cmap_name.strip().startswith("自定义"):
             work["cmap"] = ("custom", [tuple(c) for c in self.custom_colors])
@@ -1053,6 +1113,35 @@ class App(tk.Tk):
             work["cmap"] = cmap_name.strip()
         else:
             work["cmap"] = ("custom", [tuple(c) for c in self.custom_colors])
+
+        # ---- 高级参数（渲染自由度）----
+        work["layout"] = LAYOUT_CHOICES.get(self.param_vars["layout"].get(),
+                                            "classic")
+        work["kind"] = KIND_CHOICES.get(self.param_vars["kind"].get(),
+                                        "heatmap")
+        work["font"] = FONT_CHOICES.get(self.param_vars["font"].get(), "Arial")
+        edge = EDGE_CHOICES.get(self.param_vars["edge"].get(), "none")
+        work["edge"] = None if edge == "none" else (0.5, "black")
+        work["empty"] = EMPTY_CHOICES.get(self.param_vars["empty"].get(),
+                                          "#f0f0f0")
+        work["dpi"] = DPI_CHOICES.get(self.param_vars["dpi"].get(), 100)
+        # 图尺寸 "宽x高"（英寸），解析失败/非有限值保持默认；上限 40 英寸防资源滥用
+        fs = self.param_vars["figsize"].get().strip().lower()
+        try:
+            if "x" in fs:
+                w, h = fs.split("x", 1)
+                fw, fh = float(w), float(h)
+                if math.isfinite(fw) and math.isfinite(fh):
+                    work["figsize"] = (min(max(fw, 2.0), 40.0),
+                                       min(max(fh, 1.0), 40.0))
+        except (ValueError, TypeError):
+            pass
+        # 标注图类型：注入 labels 专属默认键（浅灰底 + 深灰标注）
+        if work["kind"] == "labels":
+            work.setdefault("bg", "#f0f0f0")
+            work.setdefault("label_color", "#666666")
+            work.setdefault("label_fs", 8)
+            work.setdefault("label_dy", 0.12)
         return work
 
     # ------------------------------------------------------------------

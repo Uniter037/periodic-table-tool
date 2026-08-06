@@ -38,7 +38,7 @@ STYLES = {
     # ---------------- 重构系列（文件 1~3）----------------
     "reconstruct_percent": {
         "id": "reconstruct_percent",
-        "name": "重构1 · 蓝白红热力图（百分比）",
+        "name": "蓝白红·百分比热力图（镧锕三行块）",
         "file": "Hui_Tu_Chong_gou_1-260227.py",
         "layout": "reconstructed",
         "kind": "heatmap",
@@ -54,7 +54,7 @@ STYLES = {
     },
     "reconstruct_2f_a": {
         "id": "reconstruct_2f_a",
-        "name": "重构2 · 蓝白红热力图（两位小数）",
+        "name": "蓝白红·两位小数热力图 A（镧锕三行块）",
         "file": "Hui_Tu_Chong_gou_2-260303.py",
         "layout": "reconstructed",
         "kind": "heatmap",
@@ -70,7 +70,7 @@ STYLES = {
     },
     "reconstruct_2f_b": {
         "id": "reconstruct_2f_b",
-        "name": "重构3 · 蓝白红热力图（两位小数）",
+        "name": "蓝白红·两位小数热力图 B（镧锕三行块）",
         "file": "Hui_Tu_Chong_gou_3-260303 - 副本.py",
         "layout": "reconstructed",
         "kind": "heatmap",
@@ -87,7 +87,7 @@ STYLES = {
     # ---------------- 明城系列（文件 4）----------------
     "labels_light": {
         "id": "labels_light",
-        "name": "明城01 · 底部文本标注（浅灰底）",
+        "name": "浅灰底·文本标注图（镧锕三行块）",
         "file": "Hui_Tu_Min_Cheng_01.py",
         "layout": "reconstructed",
         "kind": "labels",
@@ -101,7 +101,7 @@ STYLES = {
     # ---------------- 经典系列：图1~9（文件 5~13）----------------
     "classic_ylorrd_orig": {
         "id": "classic_ylorrd_orig",
-        "name": "图1 · YlOrRd 热力图（Helvetica 原始版）",
+        "name": "橙黄红·整数热力图（黑框·原始版）",
         "file": "Hui_Tu-1.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -121,7 +121,7 @@ STYLES = {
     },
     "classic_ylorrd": {
         "id": "classic_ylorrd",
-        "name": "图2 · YlOrRd 热力图（重构版）",
+        "name": "橙黄红·整数热力图（黑框·重构版）",
         "file": "Hui_Tu-2.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -141,7 +141,7 @@ STYLES = {
     },
     "classic_blues": {
         "id": "classic_blues",
-        "name": "图3 · Blues 热力图（Arial）",
+        "name": "蓝色系·整数热力图（黑框）",
         "file": "Hui_Tu-3.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -159,9 +159,28 @@ STYLES = {
         "text_always": False,
         "bbox_tight": True,
     },
+    "cmap_preview": {
+        "id": "cmap_preview",
+        "name": "色图预览器（生成全部色图）",
+        "file": "Hui_Tu-4.py",
+        "layout": "classic",
+        "kind": "cmap",
+        "cmap": "viridis",
+        "norm": None,
+        "fmt": "raw",
+        "font": "Arial",
+        "edge": None,
+        "empty": "#f0f0f0",
+        "cbar": None,
+        "cbar_style": "standard",
+        "num_x": 0.2,
+        "num_ha": "center",
+        "text_always": False,
+        "bbox_tight": True,
+    },
     "classic_ylgn": {
         "id": "classic_ylgn",
-        "name": "图5 · YlGn 热力图（0~0.05）",
+        "name": "绿色系·原始数值热力图（黑框）",
         "file": "Hui_Tu-5.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -181,7 +200,7 @@ STYLES = {
     },
     "classic_coolwarm": {
         "id": "classic_coolwarm",
-        "name": "图6 · coolwarm 热力图（0.61~0.77）",
+        "name": "红蓝冷暖·两位小数热力图（无框）",
         "file": "Hui_Tu-6.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -201,7 +220,7 @@ STYLES = {
     },
     "classic_coolwarm3": {
         "id": "classic_coolwarm3",
-        "name": "图8 · coolwarm 热力图（三位小数）",
+        "name": "红蓝冷暖·三位小数热力图（无框）",
         "file": "Hui_Tu8.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -221,7 +240,7 @@ STYLES = {
     },
     "classic_bwr3": {
         "id": "classic_bwr3",
-        "name": "图9 · 蓝白红热力图（三位小数）",
+        "name": "经典蓝白红·三位小数热力图（无框）",
         "file": "Hui_Tu-9.py",
         "layout": "classic",
         "kind": "heatmap",
@@ -242,7 +261,7 @@ STYLES = {
     # ---------------- 标注系列（文件 11）----------------
     "labels_highlight": {
         "id": "labels_highlight",
-        "name": "图7 · 高亮标注（深蓝底白字）",
+        "name": "高亮标注图（深蓝底白字）",
         "file": "Hui_Tu-7.py",
         "layout": "classic",
         "kind": "labels",
@@ -260,7 +279,7 @@ STYLES = {
     # ---------------- 自定义（扩展）----------------
     "custom": {
         "id": "custom",
-        "name": "自定义 · 热力图（可调全部参数）",
+        "name": "自定义热力图（全部参数可调）",
         "file": "扩展功能",
         "layout": "classic",
         "kind": "heatmap",
@@ -354,24 +373,27 @@ def _fmt_value(value, fmt):
         return f"{value:.2f}"
     if fmt == "3f":
         return f"{value:.3f}"
+    if fmt == "4f":
+        return f"{value:.4f}"
     return str(value)   # raw / g
 
 
 def render_table(style: dict, data: dict, title: str = None,
-                 show_cbar: bool = True):
+                 show_cbar: bool = True, figsize=(10, 5)):
     """渲染元素周期表（热力图或标注图），返回 matplotlib Figure。
 
     :param style:      STYLES 中的样式字典
     :param data:       数据字典，{元素符号: 值}；标注类模式值为字符串
     :param title:      可选图标题（仅自定义模式使用；原脚本无标题）
     :param show_cbar:  是否显示颜色条（False 时不创建 colorbar；原脚本行为为 True）
+    :param figsize:    图尺寸（英寸，宽, 高）；默认 (10, 5) 与原脚本一致
     """
     layout = style["layout"]
     elements = build_elements(layout, data)
     xy_bounds = xy_bounds_for(layout)
     kind = style["kind"]
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=figsize)
     ax.set_xlim(0, xy_bounds[0])
     ax.set_ylim(0, xy_bounds[1])
     ax.set_aspect("equal")
@@ -435,7 +457,7 @@ def render_table(style: dict, data: dict, title: str = None,
                 if "highlight_bg" in style:
                     facecolor = style["highlight_bg"] if value else style["plain_bg"]
                 else:
-                    facecolor = style["bg"]
+                    facecolor = style.get("bg", "#f0f0f0")
 
             if edge:
                 lw, ec = edge
@@ -476,7 +498,7 @@ def render_table(style: dict, data: dict, title: str = None,
                 ax.text(x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
                         ha="center", color="black", **text_props)
                 ax.text(x + 0.5, y + 0.12, line3, fontsize=7,
-                        color=style["label_color"], ha="center", **text_props)
+                        color=style.get("label_color", "#666666"), ha="center", **text_props)
             else:
                 ax.text(x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
                         color="black", **text_props)
@@ -506,7 +528,7 @@ def render_table(style: dict, data: dict, title: str = None,
                     label_color = base_color
                 else:
                     # 浅灰底标注（明城01）：标注文本为深灰色 #666666
-                    label_color = style["label_color"]
+                    label_color = style.get("label_color", "#666666")
                 ax.text(x + 0.5, y + style.get("label_dy", 0.12), value,
                         fontsize=style.get("label_fs", 8), ha="center",
                         color=label_color, **text_props)
