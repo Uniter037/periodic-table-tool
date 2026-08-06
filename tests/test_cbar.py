@@ -130,3 +130,30 @@ def test_cbar_preset_roundtrip(app, tmp_path, monkeypatch):
     app.preset_combo.set("cbar预设")
     app._preset_load()
     assert app.cbar_override["ticks"] == [0.1, 0.9]
+    assert len(app.cbar_tree.get_children()) == 2   # tree 同步刷新
+    # 脏预设（ticks/labels 不等长）→ 安全回退 None，不崩溃
+    (tmp_path / "bad.json").write_text(
+        json.dumps({"cbar_override": {"ticks": [1], "labels": ["a", "b"]}}),
+        encoding="utf-8")
+    app.preset_combo.set("bad")
+    app._preset_load()
+    assert app.cbar_override is None
+    # NaN tick / 非法 fontsize → 回退 None / 8
+    (tmp_path / "nan.json").write_text(
+        json.dumps({"cbar_override": {"ticks": ["nan"], "labels": ["x"],
+                                      "fontsize": "big"}}),
+        encoding="utf-8")
+    app.preset_combo.set("nan")
+    app._preset_load()
+    assert app.cbar_override is None
+    (tmp_path / "fs.json").write_text(
+        json.dumps({"cbar_override": {"ticks": [1.0], "labels": ["x"],
+                                      "fontsize": "big"}}),
+        encoding="utf-8")
+    app.preset_combo.set("fs")
+    app._preset_load()
+    assert app.cbar_override["fontsize"] == 8
+    # 清理共享状态
+    app.cbar_override = None
+    app.presets = _main.PresetStore(
+        os.path.join(_main.PROJECT_ROOT, "presets"))

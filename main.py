@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import webbrowser
@@ -978,7 +979,10 @@ class App(tk.Tk):
 
     def _cbar_apply(self, ticks, labels):
         """写入覆盖并刷新预览。"""
-        self.cbar_override = {"ticks": ticks, "labels": labels, "fontsize": 8}
+        cfg = STYLES[self._current_style_id()].get("cbar")
+        fontsize = cfg["fontsize"] if cfg else 8
+        self.cbar_override = {"ticks": ticks, "labels": labels,
+                              "fontsize": fontsize}
         self._cbar_refresh_tree()
         self._refresh_preview()
         self.status_var.set(f"颜色条标注：{len(ticks)} 个刻度")
@@ -1098,10 +1102,24 @@ class App(tk.Tk):
                         self.param_vars[k].set(str(v))
             self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
             raw_cbar = payload.get("cbar_override")
-            if isinstance(raw_cbar, dict) and "ticks" in raw_cbar:
-                self.cbar_override = raw_cbar
+            if (isinstance(raw_cbar, dict)
+                    and isinstance(raw_cbar.get("ticks"), list)
+                    and isinstance(raw_cbar.get("labels"), list)
+                    and len(raw_cbar["ticks"]) == len(raw_cbar["labels"])
+                    and all(isinstance(t, (int, float)) and math.isfinite(t)
+                            for t in raw_cbar["ticks"])):
+                fontsize = raw_cbar.get("fontsize", 8)
+                if not (isinstance(fontsize, (int, float))
+                        and math.isfinite(fontsize)):
+                    fontsize = 8
+                self.cbar_override = {
+                    "ticks": list(raw_cbar["ticks"]),
+                    "labels": list(raw_cbar["labels"]),
+                    "fontsize": fontsize,
+                }
             else:
                 self.cbar_override = None
+            self._cbar_refresh_tree()
             self.custom_colors = self._sanitize_colors(payload.get("custom_colors"))
             self._build_color_row(self.color_frame)
             raw_data = payload.get("data", {})
@@ -1317,17 +1335,6 @@ def _cmap_name(style):
 
 
 def main():
-    # PTT_SMOKE=1 时写进度标记文件，用于冒烟定位（windowed 无控制台输出）
-    def _smoke_log(msg):
-        if os.environ.get("PTT_SMOKE") == "1":
-            try:
-                marker = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
-                                      "smoke_progress.txt")
-                with open(marker, "a", encoding="utf-8") as fh:
-                    fh.write(msg + "\n")
-            except OSError:
-                pass
-
     _smoke_log("start")
     app = App()
     _smoke_log("app_created")
