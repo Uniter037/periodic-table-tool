@@ -10,6 +10,10 @@ __pycache__/
 output/
 dist/
 
+# PyInstaller 中间产物
+build/
+*.spec
+
 # 用户预设数据
 presets/
 
