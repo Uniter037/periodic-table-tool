@@ -24,17 +24,40 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 import tkinter.font as tkfont
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# 打包为 exe 时（PyInstaller --onefile），__file__ 位于临时解压目录，
+# 输出/预设必须落在可写的 exe 同目录；源码运行用项目目录。
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-# 注意：不强制 matplotlib 后端。FigureCanvasTkAgg 在任意后端下均可工作
-# （内部使用 agg 渲染），无头/测试环境（Agg）也能创建预览画布（需有显示）。
+# exe 冒烟标记（模块级，定位 windowed 版 import 卡点）
+def _smoke_log(msg):
+    if os.environ.get("PTT_SMOKE") == "1":
+        try:
+            marker = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                                  "smoke_progress.txt")
+            with open(marker, "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+        except OSError:
+            pass
+
+
+_smoke_log("import:before_matplotlib")
+# exe 内显式使用 TkAgg 后端（保证预览画布与 PyInstaller hook 收集）；
+# 源码/测试环境保持默认（不污染测试进程）。
+if getattr(sys, "frozen", False):
+    import matplotlib
+    matplotlib.use("TkAgg")
+_smoke_log("import:after_matplotlib")
 
 from core import (STYLES, parse_data, validate_data, demo_data,
                   known_symbols, render_table, render_cmap_preview,
                   save_figure, auto_name, PresetStore)
 from core.ptable import build_elements, xy_bounds_for, CELL_STEP
 from core.elements_data import ALL_SYMBOLS
+_smoke_log("import:after_core")
 
 SYMBOLS = set(ALL_SYMBOLS)
 FORMATS = ["svg", "png", "pdf"]
@@ -278,6 +301,7 @@ class App(tk.Tk):
         self._current_scale = None           # 已应用的缩放值（防抖）
         self._last_preview_size = (0, 0)     # 预览画布上次尺寸（防抖）
         self._app_font = None
+        self.cbar_override = None            # 颜色条标注自定义（None=用样式默认）
         self._load_config()
         if isinstance(self._config.get("geometry"), str):
             try:
@@ -573,9 +597,40 @@ class App(tk.Tk):
                         command=self._refresh_preview).grid(
             row=r, column=0, columnspan=4, sticky="w", pady=(8, 2))
 
+        # ---- 颜色条标注（刻度自定义）----
+        cbar_lf = ttk.LabelFrame(
+            left, text="颜色条标注（刻度与标签可增删改）", padding=4)
+        cbar_lf.grid(row=r + 1, column=0, columnspan=4, sticky="we", pady=(4, 2))
+        self.cbar_tree = ttk.Treeview(cbar_lf, columns=("v", "l"),
+                                      show="headings", height=3)
+        self.cbar_tree.heading("v", text="刻度值")
+        self.cbar_tree.heading("l", text="标签")
+        self.cbar_tree.column("v", width=80, anchor="center")
+        self.cbar_tree.column("l", width=130, anchor="center")
+        self.cbar_tree.pack(fill="x")
+        cbar_edit = ttk.Frame(cbar_lf)
+        cbar_edit.pack(fill="x", pady=(4, 0))
+        self.cbar_value_var = tk.StringVar()
+        self.cbar_label_var = tk.StringVar()
+        ttk.Entry(cbar_edit, textvariable=self.cbar_value_var, width=9).pack(
+            side="left", padx=(0, 3))
+        ttk.Entry(cbar_edit, textvariable=self.cbar_label_var, width=16).pack(
+            side="left")
+        cbar_btns = ttk.Frame(cbar_lf)
+        cbar_btns.pack(fill="x", pady=(4, 0))
+        ttk.Button(cbar_btns, text="添加", width=5,
+                   command=self._cbar_add).pack(side="left", padx=(0, 3))
+        ttk.Button(cbar_btns, text="更新选中", width=7,
+                   command=self._cbar_update).pack(side="left", padx=(0, 3))
+        ttk.Button(cbar_btns, text="删除选中", width=7,
+                   command=self._cbar_delete).pack(side="left", padx=(0, 3))
+        ttk.Button(cbar_btns, text="恢复默认", width=8,
+                   command=self._cbar_reset).pack(side="left")
+        self.cbar_controls = (cbar_lf,)
+
         # ---- 自定义颜色 ----
         color_lf = ttk.LabelFrame(left, text="自定义颜色（仅自定义模式）", padding=4)
-        color_lf.grid(row=r + 1, column=0, columnspan=4, sticky="we", pady=(4, 2))
+        color_lf.grid(row=r + 2, column=0, columnspan=4, sticky="we", pady=(4, 2))
         self.color_buttons = []
         self._build_color_row(color_lf)
         cbtns = ttk.Frame(color_lf)
@@ -590,7 +645,7 @@ class App(tk.Tk):
 
         # ---- 预设 ----
         preset_lf = ttk.LabelFrame(left, text="预设（保存整套设置）", padding=4)
-        preset_lf.grid(row=r + 2, column=0, columnspan=4, sticky="we", pady=(6, 2))
+        preset_lf.grid(row=r + 3, column=0, columnspan=4, sticky="we", pady=(6, 2))
         self.preset_name_var = tk.StringVar()
         ttk.Entry(preset_lf, textvariable=self.preset_name_var, width=22).pack(
             fill="x", pady=(0, 4))
@@ -608,7 +663,7 @@ class App(tk.Tk):
             side="left")
 
         # ---- 输出 ----
-        out_row = r + 3
+        out_row = r + 4
         ttk.Label(left, text="输出格式").grid(row=out_row, column=0, sticky="w", pady=(10, 0))
         self.fmt_var = tk.StringVar(value="svg")
         fmt_combo = ttk.Combobox(left, textvariable=self.fmt_var, state="readonly",
@@ -726,11 +781,16 @@ class App(tk.Tk):
         return list(STYLES.keys())[self.mode_combo.current()]
 
     def _current_work_style(self):
-        """当前生效的样式：自定义模式应用面板参数与自定义颜色。"""
+        """当前生效的样式：自定义模式应用面板参数；任意模式注入颜色条标注覆盖。"""
         style = STYLES[self._current_style_id()]
-        if style.get("customizable"):
-            return self._apply_custom_params(style)
-        return style
+        work = (self._apply_custom_params(style)
+                if style.get("customizable") else style)
+        if self.cbar_override is not None:
+            # 非自定义模式返回的是 STYLES 原对象，浅拷贝避免污染全局
+            if not style.get("customizable"):
+                work = dict(work)
+            work["cbar"] = self.cbar_override
+        return work
 
     def _on_style_change(self):
         style_id = self._current_style_id()
@@ -777,6 +837,7 @@ class App(tk.Tk):
             self.hint_label.config(text="热力图模式：数值列填数字，缺失元素显示为空/灰格。")
 
         self._preset_refresh()
+        self._cbar_refresh_tree()
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -895,6 +956,83 @@ class App(tk.Tk):
         self._refresh_preview()
 
     # ------------------------------------------------------------------
+    # 颜色条标注（刻度与标签自定义）
+    # ------------------------------------------------------------------
+    def _cbar_current_entries(self):
+        """当前生效的标注列表（覆盖值优先，否则样式自带，否则空）。"""
+        if self.cbar_override is not None:
+            return self.cbar_override["ticks"], self.cbar_override["labels"]
+        style = self._current_work_style()
+        cfg = style.get("cbar") if not style.get("customizable") else \
+            STYLES["custom"].get("cbar")
+        if cfg:
+            return list(cfg["ticks"]), list(cfg["labels"])
+        return [], []
+
+    def _cbar_refresh_tree(self):
+        """把当前标注刷新到 Treeview 显示。"""
+        ticks, labels = self._cbar_current_entries()
+        self.cbar_tree.delete(*self.cbar_tree.get_children())
+        for t, l in zip(ticks, labels):
+            self.cbar_tree.insert("", "end", values=(str(t), str(l)))
+
+    def _cbar_apply(self, ticks, labels):
+        """写入覆盖并刷新预览。"""
+        self.cbar_override = {"ticks": ticks, "labels": labels, "fontsize": 8}
+        self._cbar_refresh_tree()
+        self._refresh_preview()
+        self.status_var.set(f"颜色条标注：{len(ticks)} 个刻度")
+
+    def _cbar_add(self):
+        try:
+            val = float(self.cbar_value_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("提示", "刻度值必须是数字。")
+            return
+        label = self.cbar_label_var.get().strip()
+        ticks, labels = self._cbar_current_entries()
+        ticks.append(val)
+        labels.append(label)
+        self._cbar_apply(ticks, labels)
+
+    def _cbar_update(self):
+        sel = self.cbar_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先在列表中选择一行。")
+            return
+        try:
+            val = float(self.cbar_value_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("提示", "刻度值必须是数字。")
+            return
+        label = self.cbar_label_var.get().strip()
+        idx = self.cbar_tree.index(sel[0])
+        ticks, labels = self._cbar_current_entries()
+        ticks[idx] = val
+        labels[idx] = label
+        self._cbar_apply(ticks, labels)
+
+    def _cbar_delete(self):
+        sel = self.cbar_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先在列表中选择一行。")
+            return
+        idx = self.cbar_tree.index(sel[0])
+        ticks, labels = self._cbar_current_entries()
+        ticks.pop(idx)
+        labels.pop(idx)
+        self._cbar_apply(ticks, labels)
+
+    def _cbar_reset(self):
+        """恢复默认：不覆盖样式自带的颜色条标注。"""
+        self.cbar_override = None
+        self.cbar_value_var.set("")
+        self.cbar_label_var.set("")
+        self._cbar_refresh_tree()
+        self._refresh_preview()
+        self.status_var.set("颜色条标注已恢复默认")
+
+    # ------------------------------------------------------------------
     # 预设
     # ------------------------------------------------------------------
     def _preset_refresh(self):
@@ -908,6 +1046,7 @@ class App(tk.Tk):
                         "layout", "kind", "font", "edge", "empty",
                         "dpi", "figsize", "title")},
             "show_cbar": self.show_cbar_var.get(),
+            "cbar_override": self.cbar_override,
             "custom_colors": self.custom_colors,
             "data": self.data,
         }
@@ -958,6 +1097,11 @@ class App(tk.Tk):
                     if k in self.param_vars:
                         self.param_vars[k].set(str(v))
             self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
+            raw_cbar = payload.get("cbar_override")
+            if isinstance(raw_cbar, dict) and "ticks" in raw_cbar:
+                self.cbar_override = raw_cbar
+            else:
+                self.cbar_override = None
             self.custom_colors = self._sanitize_colors(payload.get("custom_colors"))
             self._build_color_row(self.color_frame)
             raw_data = payload.get("data", {})
@@ -1173,8 +1317,27 @@ def _cmap_name(style):
 
 
 def main():
+    # PTT_SMOKE=1 时写进度标记文件，用于冒烟定位（windowed 无控制台输出）
+    def _smoke_log(msg):
+        if os.environ.get("PTT_SMOKE") == "1":
+            try:
+                marker = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                                      "smoke_progress.txt")
+                with open(marker, "a", encoding="utf-8") as fh:
+                    fh.write(msg + "\n")
+            except OSError:
+                pass
+
+    _smoke_log("start")
     app = App()
+    _smoke_log("app_created")
+    # PTT_SMOKE=1：构造成功即自动退出（隐藏窗口避免无交互桌面阻塞）
+    if os.environ.get("PTT_SMOKE") == "1":
+        app.withdraw()
+        app.after(1500, app.destroy)
+    _smoke_log("before_mainloop")
     app.mainloop()
+    _smoke_log("after_mainloop")
 
 
 if __name__ == "__main__":
