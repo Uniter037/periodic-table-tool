@@ -68,7 +68,7 @@ KIND_CHOICES = {"热力图": "heatmap", "标注图（文本）": "labels"}
 FONT_CHOICES = {"Arial": "Arial", "Helvetica": "Helvetica",
                 "DejaVu Sans": "DejaVu Sans"}
 EDGE_CHOICES = {"无边框": "none", "黑色细线": "black"}
-EMPTY_CHOICES = {"浅灰": "#f0f0f0", "白色": "white", "透明": "none"}
+EMPTY_CHOICES = {"浅灰": "#f0f0f0", "白色": "white", "白色(w)": "w", "透明": "none"}
 FMT_CHOICES = {"百分比 2 位": "percent2", "两位小数": "2f", "三位小数": "3f",
                "四位小数": "4f", "原始": "raw"}
 DPI_CHOICES = {"72": 72, "100": 100, "150": 150, "300": 300}
@@ -1105,6 +1105,12 @@ class App(tk.Tk):
             raise ValueError("vmin / vcenter / vmax 必须是有限数值")
         work["norm"] = (("twoslope", vmin, vcenter, vmax) if vcenter is not None
                         else ("normalize", vmin, vmax))
+        # 范围顺序校验：vmin < vcenter < vmax（normalize 时 vmin < vmax）
+        if vcenter is not None:
+            if not (vmin < vcenter < vmax):
+                raise ValueError("范围顺序应为 vmin < vcenter < vmax")
+        elif vmin >= vmax:
+            raise ValueError("vmin 必须小于 vmax")
         work["fmt"] = FMT_CHOICES.get(self.param_vars["fmt"].get(), "3f")
         # 自定义颜色优先；否则按输入的名称取预置色图
         if cmap_name.strip().startswith("自定义"):

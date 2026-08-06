@@ -130,6 +130,17 @@ def test_custom_nan_and_inf_rejected(app):
     app.param_vars["figsize"].set("abc")
     work = app._apply_custom_params(main.STYLES["custom"])
     assert work.get("figsize", (10, 5)) == (10, 5)
+    # 范围顺序非法 → 抛错（vmin >= vmax）
+    app.param_vars["vmin"].set("5")
+    app.param_vars["vmax"].set("1")
+    with pytest.raises(ValueError):
+        app._apply_custom_params(main.STYLES["custom"])
+    # vmin == vcenter == vmax 全相等 → 抛错（TwoSlopeNorm 退化）
+    app.param_vars["vmin"].set("1")
+    app.param_vars["vcenter"].set("1")
+    app.param_vars["vmax"].set("1")
+    with pytest.raises(ValueError):
+        app._apply_custom_params(main.STYLES["custom"])
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")

@@ -149,6 +149,7 @@ def test_gui_preset_flow(app, tmp_path, monkeypatch):
     app.mode_combo.current(0)
     app._on_style_change()
     app._load_demo()
+    saved_data = dict(app.data)            # 记录预设保存时的数据
     app.preset_name_var.set("测试预设")
     app._preset_save()
     assert "测试预设" in app.presets.list()
@@ -163,5 +164,4 @@ def test_gui_preset_flow(app, tmp_path, monkeypatch):
     app.preset_combo.set("测试预设")
     app._preset_load()
     assert app._current_style_id() == "reconstruct_percent"
-    assert "Fe" in app.data
-    assert app.data["Fe"] == "0.75" or app.data["Fe"] != 9.9
+    assert app.data == saved_data, "加载预设后数据应与保存时一致"

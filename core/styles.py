@@ -392,6 +392,9 @@ def render_table(style: dict, data: dict, title: str = None,
     elements = build_elements(layout, data)
     xy_bounds = xy_bounds_for(layout)
     kind = style["kind"]
+    if kind == "cmap":
+        # 色图预览器是独立功能（render_cmap_preview），不渲染周期表
+        raise ValueError("色图预览器模式无需渲染周期表（使用 render_cmap_preview）")
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_xlim(0, xy_bounds[0])
