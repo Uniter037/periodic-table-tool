@@ -993,6 +993,9 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showwarning("提示", "刻度值必须是数字。")
             return
+        if not math.isfinite(val):
+            messagebox.showwarning("提示", "刻度值必须是有限数字。")
+            return
         label = self.cbar_label_var.get().strip()
         ticks, labels = self._cbar_current_entries()
         ticks.append(val)
@@ -1008,6 +1011,9 @@ class App(tk.Tk):
             val = float(self.cbar_value_var.get().strip())
         except ValueError:
             messagebox.showwarning("提示", "刻度值必须是数字。")
+            return
+        if not math.isfinite(val):
+            messagebox.showwarning("提示", "刻度值必须是有限数字。")
             return
         label = self.cbar_label_var.get().strip()
         idx = self.cbar_tree.index(sel[0])
@@ -1106,10 +1112,12 @@ class App(tk.Tk):
                     and isinstance(raw_cbar.get("ticks"), list)
                     and isinstance(raw_cbar.get("labels"), list)
                     and len(raw_cbar["ticks"]) == len(raw_cbar["labels"])
-                    and all(isinstance(t, (int, float)) and math.isfinite(t)
+                    and all(isinstance(t, (int, float)) and type(t) is not bool
+                            and math.isfinite(t)
                             for t in raw_cbar["ticks"])):
                 fontsize = raw_cbar.get("fontsize", 8)
                 if not (isinstance(fontsize, (int, float))
+                        and type(fontsize) is not bool
                         and math.isfinite(fontsize)):
                     fontsize = 8
                 self.cbar_override = {

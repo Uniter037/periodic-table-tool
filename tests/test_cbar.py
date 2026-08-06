@@ -102,6 +102,10 @@ def test_cbar_editor_flow(app, monkeypatch):
     app.cbar_value_var.set("abc")
     app._cbar_add()
     assert len(app.cbar_override["ticks"]) == 2
+    # NaN 刻度值 → 拒绝（有限值校验）
+    app.cbar_value_var.set("nan")
+    app._cbar_add()
+    assert len(app.cbar_override["ticks"]) == 2
     # 删除第一行
     first = app.cbar_tree.get_children()[0]
     app.cbar_tree.selection_set(first)
@@ -151,6 +155,20 @@ def test_cbar_preset_roundtrip(app, tmp_path, monkeypatch):
                                       "fontsize": "big"}}),
         encoding="utf-8")
     app.preset_combo.set("fs")
+    app._preset_load()
+    assert app.cbar_override["fontsize"] == 8
+    # bool tick / bool fontsize → 回退 None / 8（type is not bool 排除）
+    (tmp_path / "bool.json").write_text(
+        json.dumps({"cbar_override": {"ticks": [True], "labels": ["x"]}}),
+        encoding="utf-8")
+    app.preset_combo.set("bool")
+    app._preset_load()
+    assert app.cbar_override is None
+    (tmp_path / "boolfs.json").write_text(
+        json.dumps({"cbar_override": {"ticks": [1.0], "labels": ["x"],
+                                      "fontsize": True}}),
+        encoding="utf-8")
+    app.preset_combo.set("boolfs")
     app._preset_load()
     assert app.cbar_override["fontsize"] == 8
     # 清理共享状态
