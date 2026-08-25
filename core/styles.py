@@ -13,6 +13,7 @@ import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm
 
+from .fonts import font_family_for_text, resolve_font_family
 from .ptable import build_elements, xy_bounds_for, CELL_STEP
 
 # ---------------------------------------------------------------------------
@@ -402,6 +403,9 @@ def render_table(style: dict, data: dict, title: str = None,
     ax.set_aspect("equal")
     ax.axis("off")
 
+    # 样式字体名 -> 当前环境可用字体（Arial 缺失时回退 DejaVu Sans）
+    font = resolve_font_family(style.get("font", "Arial"))
+
     # ---- 颜色映射 / 归一化 / 颜色条（与原脚本一样先建颜色条）----
     cmap = norm = mappable = cbar = None
     if kind == "heatmap":
@@ -425,11 +429,14 @@ def render_table(style: dict, data: dict, title: str = None,
                 cfg = style["cbar"]
                 cbar.set_ticks(cfg["ticks"])
                 cbar.set_ticklabels(cfg["labels"])
-                cbar.ax.set_yticklabels(cfg["labels"], fontsize=cfg["fontsize"])
+                cbar_font = font_family_for_text(font, "".join(
+                    str(x) for x in cfg["labels"]))
+                cbar.ax.set_yticklabels(cfg["labels"],
+                                        fontsize=cfg["fontsize"],
+                                        fontfamily=cbar_font)
 
     # ---- 通用绘制参数 ----
     edge = style.get("edge")
-    font = style.get("font", "Arial")
     text_always = style.get("text_always", False)
     num_x = style.get("num_x", 0.2)
     num_ha = style.get("num_ha", "center")
@@ -472,9 +479,9 @@ def render_table(style: dict, data: dict, title: str = None,
             ax.add_patch(rect)
 
         # ----- 文本 -----
-        # 注意：text_props 只含 fontfamily / va（ha 与 color 均显式传递），
+        # 注意：text_props 只含 va（ha / color / fontfamily 均显式传递），
         # 避免与原脚本中"显式 ha / color + 重复键"的 bug 冲突。
-        text_props = {"fontfamily": font, "va": "center"}
+        text_props = {"va": "center"}
 
         if kind == "heatmap":
             base_color = "black"
@@ -486,45 +493,64 @@ def render_table(style: dict, data: dict, title: str = None,
 
         if num is not None:
             ax.text(x + num_x, y + 0.8, str(num), fontsize=6, ha=num_ha,
-                    color=base_color, **text_props)
+                    color=base_color, fontfamily=font, **text_props)
         elif text_always:
             # 图1 原行为：对标记元素也画文本（matplotlib 将 None 显示为空）
             ax.text(x + num_x, y + 0.8, num, fontsize=6, ha=num_ha,
-                    color=base_color, **text_props)
+                    color=base_color, fontfamily=font, **text_props)
 
         if isinstance(symbol, tuple):
             # 重构系列的三行标注块
             line1, line2, line3 = symbol
             if kind == "labels":
                 ax.text(x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
-                        color="black", **text_props)
+                        color="black",
+                        fontfamily=font_family_for_text(font, line1),
+                        **text_props)
                 ax.text(x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
-                        ha="center", color="black", **text_props)
+                        ha="center", color="black",
+                        fontfamily=font_family_for_text(font, line2),
+                        **text_props)
                 ax.text(x + 0.5, y + 0.12, line3, fontsize=7,
-                        color=style.get("label_color", "#666666"), ha="center", **text_props)
+                        color=style.get("label_color", "#666666"), ha="center",
+                        fontfamily=font_family_for_text(font, line3),
+                        **text_props)
             else:
                 ax.text(x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
-                        color="black", **text_props)
+                        color="black",
+                        fontfamily=font_family_for_text(font, line1),
+                        **text_props)
                 ax.text(x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
-                        ha="center", color="black", **text_props)
+                        ha="center", color="black",
+                        fontfamily=font_family_for_text(font, line2),
+                        **text_props)
                 ax.text(x + 0.5, y + 0.12, line3, fontsize=6, ha="center",
-                        color="black", **text_props)
+                        color="black",
+                        fontfamily=font_family_for_text(font, line3),
+                        **text_props)
         else:
             ax.text(x + 0.5, y + 0.5, symbol, fontsize=9, weight="bold",
-                    ha="center", color=base_color, **text_props)
+                    ha="center", color=base_color, fontfamily=font,
+                    **text_props)
 
             if kind == "heatmap" and text_always:
                 # 图1 原行为：无条件绘制数值文本（0 值显示 '0'，None 显示空）
                 if value is None:
                     ax.text(x + 0.5, y + 0.12, None, fontsize=6, ha="center",
-                            color=base_color, **text_props)
+                            color=base_color, fontfamily=font,
+                            **text_props)
                 else:
-                    ax.text(x + 0.5, y + 0.12, _fmt_value(value, style["fmt"]),
-                            fontsize=6, ha="center", color=base_color, **text_props)
+                    value_text = _fmt_value(value, style["fmt"])
+                    ax.text(x + 0.5, y + 0.12, value_text,
+                            fontsize=6, ha="center", color=base_color,
+                            fontfamily=font_family_for_text(font, value_text),
+                            **text_props)
             elif kind == "heatmap" and value:
                 text = _fmt_value(value, style["fmt"])
                 ax.text(x + 0.5, y + 0.12, text, fontsize=6, ha="center",
-                        color=base_color, **text_props)
+                        color=base_color,
+                        fontfamily=font_family_for_text(font, text),
+                        **text_props)
             elif kind == "labels" and value:
                 if "highlight_bg" in style:
                     # 高亮标注：文字颜色随格子（深蓝底白字 / 浅灰底黑字）
@@ -534,10 +560,13 @@ def render_table(style: dict, data: dict, title: str = None,
                     label_color = style.get("label_color", "#666666")
                 ax.text(x + 0.5, y + style.get("label_dy", 0.12), value,
                         fontsize=style.get("label_fs", 8), ha="center",
-                        color=label_color, **text_props)
+                        color=label_color,
+                        fontfamily=font_family_for_text(font, value),
+                        **text_props)
 
     if title:
-        fig.suptitle(title, fontsize=14)
+        fig.suptitle(title, fontsize=14,
+                     fontfamily=font_family_for_text(font, title))
 
     plt.tight_layout()
     return fig

@@ -16,6 +16,7 @@ INCLUDE = [
     "requirements.txt",
     "pyproject.toml",
     "core/__init__.py",
+    "core/fonts.py",
     "core/ptable.py",
     "core/elements_data.py",
     "core/styles.py",

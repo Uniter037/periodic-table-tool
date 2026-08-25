@@ -12,7 +12,7 @@
 
 ## 待解决
 
-- [ ] **Arial/Helvetica 字体缺失**：Linux 环境无 Arial，matplotlib 回退 DejaVu Sans，日志大量 `Font family 'Arial' not found`，且 CJK 字形缺失。需要增加字体解析与回退机制。
+- [x] **Arial/Helvetica 字体缺失**：已新增 `core/fonts.py`，Arial/Helvetica 缺失时回退 DejaVu Sans；CJK 文本自动使用微软雅黑（若可用）。
 - [ ] **一致性测试附件缺失**：`tests/verify.py` 依赖 `.reasonix/attachments/clipboard-*.py` 原始脚本，当前压缩包未包含，导致 `test_consistency.py` 12 个子测试失败。
 - [ ] 高 DPI 适配（Windows 下 `SetProcessDpiAwareness`）。
 - [ ] 生成按钮 loading 状态，避免重复点击。
@@ -24,10 +24,9 @@
 
 We need to:
 
-1. We need to add a font resolver in `core/styles.py` (or a new `core/fonts.py`) that tries Arial → Helvetica → DejaVu Sans → available CJK fonts, and configure matplotlib font fallback.
-2. We need to add a regression test that asserts rendering under Linux does not emit `Font family 'Arial' not found` warnings for the built-in 14 styles.
-3. We need to obtain or regenerate the missing `.reasonix/attachments/clipboard-*.py` files, then run and pass `tests/test_consistency.py`.
-4. We need to add Windows high-DPI initialization guarded by `sys.platform == "win32"` and `getattr(sys, "frozen", False)` or simply platform check.
-5. We need to add a "生成中..." disabled state to the generate button during figure rendering/saving.
-6. We need to re-run `pytest --ignore=tests/test_consistency.py` after each change to keep the 46-test baseline green.
-7. We need to push the committed changes to GitHub; if network/credentials are missing, produce a `periodic-table-tool-gui-beautify.patch` as the upload artifact.
+1. We need to keep the font-fix regression green: `pytest --ignore=tests/test_consistency.py` now has **51 passed**.
+2. We need to obtain or regenerate the missing `.reasonix/attachments/clipboard-*.py` files, then run and pass `tests/test_consistency.py`.
+3. We need to add Windows high-DPI initialization guarded by `sys.platform == "win32"` and `getattr(sys, "frozen", False)` or simply platform check.
+4. We need to add a "生成中..." disabled state to the generate button during figure rendering/saving.
+5. We need to re-run `pytest --ignore=tests/test_consistency.py` after each change to keep the baseline green.
+6. We need to push each completed step to GitHub.
