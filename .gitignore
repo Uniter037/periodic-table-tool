@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 测试缓存
+.venv/
+.pytest_cache/
+
+# 生成物
+output/
+dist/
+
+# PyInstaller 中间产物
+build/
+*.spec
+
+# 用户预设数据
+presets/
+
+# 敏感文件
+.env
+*.env
+*.key
+*.pem
+credentials*
