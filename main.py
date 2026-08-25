@@ -49,6 +49,20 @@ def _smoke_log(msg):
             pass
 
 
+def _enable_windows_dpi_awareness():
+    """Windows 高 DPI 适配：避免 Tk 应用在高分屏发虚。"""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 _smoke_log("import:before_matplotlib")
 # exe 内显式使用 TkAgg 后端（保证预览画布与 PyInstaller hook 收集）；
 # 源码/测试环境保持默认（不污染测试进程）。
@@ -769,8 +783,10 @@ class App(tk.Tk):
         ttk.Button(left, text="浏览", width=5,
                    command=self._choose_out_dir).grid(row=out_row + 1, column=3, pady=(6, 0))
 
-        ttk.Button(left, text="生成图片", style="Accent.TButton",
-                   command=self.generate).grid(
+        self.generate_btn = ttk.Button(left, text="生成图片",
+                                       style="Accent.TButton",
+                                       command=self.generate)
+        self.generate_btn.grid(
             row=out_row + 2, column=0, columnspan=4, sticky="we", pady=(12, 4))
         ttk.Button(left, text="打开输出目录", command=self._open_out_dir).grid(
             row=out_row + 3, column=0, columnspan=4, sticky="we", pady=4)
@@ -1303,7 +1319,9 @@ class App(tk.Tk):
         style = STYLES[style_id]
         out_dir = self.out_var.get().strip() or self.out_dir
 
+        self.generate_btn.configure(state="disabled", text="生成中...")
         try:
+            self.update_idletasks()
             if style_id == "cmap_preview":
                 self._generate_cmap_preview(out_dir)
                 return
@@ -1346,6 +1364,9 @@ class App(tk.Tk):
                 webbrowser.open(path)
         except Exception as exc:
             messagebox.showerror("生成失败", str(exc))
+        finally:
+            self.generate_btn.configure(state="normal", text="生成图片")
+            self.update_idletasks()
 
     def _generate_cmap_preview(self, out_dir):
         paths = render_cmap_preview(out_dir)
@@ -1439,6 +1460,7 @@ def _cmap_name(style):
 
 
 def main():
+    _enable_windows_dpi_awareness()
     _smoke_log("start")
     app = App()
     _smoke_log("app_created")

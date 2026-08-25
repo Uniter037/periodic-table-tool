@@ -14,8 +14,8 @@
 
 - [x] **Arial/Helvetica 字体缺失**：已新增 `core/fonts.py`，Arial/Helvetica 缺失时回退 DejaVu Sans；CJK 文本自动使用微软雅黑（若可用）。
 - [ ] **一致性测试附件缺失**：`tests/verify.py` 依赖 `.reasonix/attachments/clipboard-*.py` 原始脚本，当前压缩包未包含，导致 `test_consistency.py` 12 个子测试失败。
-- [ ] 高 DPI 适配（Windows 下 `SetProcessDpiAwareness`）。
-- [ ] 生成按钮 loading 状态，避免重复点击。
+- [x] 高 DPI 适配：已在 `main()` 中启用 `SetProcessDpiAwareness`。
+- [x] 生成按钮 loading 状态：`generate()` 中禁用按钮并显示「生成中...」。
 - [ ] 左侧参数区进一步分区与视觉分隔。
 - [ ] PyInstaller spec 增加图标/版本资源。
 - [ ] 深色模式下部分 matplotlib 预览图背景保持白色，需确认是否需要同步暗色渲染。
@@ -26,7 +26,5 @@ We need to:
 
 1. We need to keep the font-fix regression green: `pytest --ignore=tests/test_consistency.py` now has **51 passed**.
 2. We need to obtain or regenerate the missing `.reasonix/attachments/clipboard-*.py` files, then run and pass `tests/test_consistency.py`.
-3. We need to add Windows high-DPI initialization guarded by `sys.platform == "win32"` and `getattr(sys, "frozen", False)` or simply platform check.
-4. We need to add a "生成中..." disabled state to the generate button during figure rendering/saving.
-5. We need to re-run `pytest --ignore=tests/test_consistency.py` after each change to keep the baseline green.
-6. We need to push each completed step to GitHub.
+3. We need to re-run `pytest --ignore=tests/test_consistency.py` after each change to keep the baseline green.
+4. We need to push each completed step to GitHub.
