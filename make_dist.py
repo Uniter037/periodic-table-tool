@@ -1,47 +1,58 @@
 # -*- coding: utf-8 -*-
-"""打包发行包：生成 dist/periodic-table-tool-v{VERSION}.zip。"""
-import os
+"""生成可重复的源码 ZIP；不构建或发布 exe。"""
+from pathlib import Path
 import zipfile
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-VERSION = "1.3.1"
-DIST_DIR = os.path.join(ROOT, "dist")
+ROOT = Path(__file__).resolve().parent
+VERSION = "1.4.0"
+DIST_DIR = ROOT / "dist"
 ZIP_NAME = f"periodic-table-tool-v{VERSION}.zip"
+INCLUDE = ["main.py", "README.md", "requirements.txt", "pyproject.toml",
+           "make_dist.py", "build_exe.py"]
 
-# 需要打包的文件（相对项目根）
-INCLUDE = [
-    "main.py",
-    "README.md",
-    "requirements.txt",
-    "pyproject.toml",
-    "core/__init__.py",
-    "core/ptable.py",
-    "core/elements_data.py",
-    "core/styles.py",
-    "core/dataio.py",
-    "core/presets.py",
-    "core/saver.py",
-]
-EXCLUDE_PARTS = ("__pycache__",)
+
+def source_files(root=ROOT):
+    """动态发现运行时模块及测试基准，排除缓存与构建产物。"""
+    root = Path(root)
+    files = set(INCLUDE)
+    for package in ("core", "ui", "tests"):
+        files.update(p.relative_to(root).as_posix()
+                     for p in (root / package).rglob("*.py")
+                     if "__pycache__" not in p.parts)
+    for folder in ("tests/fixtures",):
+        files.update(p.relative_to(root).as_posix()
+                     for p in (root / folder).rglob("*")
+                     if p.is_file() and "__pycache__" not in p.parts
+                     and p.suffix != ".pyc")
+    files.update(p.relative_to(root).as_posix()
+                 for p in (root / "examples").rglob("*")
+                 if p.is_file() and not p.is_symlink()
+                 and p.suffix.lower() in {".txt", ".json", ".csv"}
+                 and "__pycache__" not in p.parts)
+    for rel in sorted(files):
+        if not (root / rel).is_file():
+            raise FileNotFoundError(f"缺少文件: {rel}")
+        yield rel
+
+
+def build_archive(root=ROOT, destination=None):
+    root = Path(root)
+    files = list(source_files(root))
+    destination = Path(destination) if destination else root / "dist" / ZIP_NAME
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel in files:
+            info = zipfile.ZipInfo(f"periodic-table-tool/{rel}", (2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            zf.writestr(info, (root / rel).read_bytes())
+    return destination
 
 
 def main():
-    os.makedirs(DIST_DIR, exist_ok=True)
-    zip_path = os.path.join(DIST_DIR, ZIP_NAME)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in INCLUDE:
-            src = os.path.join(ROOT, rel)
-            if not os.path.isfile(src):
-                raise FileNotFoundError(f"缺少文件: {rel}")
-            arc = os.path.join("periodic-table-tool", rel)
-            zf.write(src, arc)
-    size = os.path.getsize(zip_path)
-    print(f"已生成 {zip_path} ({size} 字节)")
-    with zipfile.ZipFile(zip_path) as zf:
-        names = zf.namelist()
-        print(f"包含 {len(names)} 个文件:")
-        for n in names:
-            print(f"  {n}")
+    path = build_archive()
+    print(f"已生成 {path} ({path.stat().st_size} 字节)")
 
 
 if __name__ == "__main__":

@@ -7,12 +7,16 @@
 """
 from __future__ import annotations
 
+import math
+
 import matplotlib as mpl
 import matplotlib.cm as cm
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm
 
+from .dataio import _coerce
+from .fonts import apply_text_fallbacks
 from .ptable import build_elements, xy_bounds_for, CELL_STEP
 
 # ---------------------------------------------------------------------------
@@ -133,7 +137,7 @@ STYLES = {
         "edge": (0.5, "black"),
         "empty": "none",
         "cbar": None,
-        "cbar_style": "ax_plain",   # fig.colorbar(mappable, ax=ax, drawedges=False)
+        "cbar_style": "ax_plain",   # fig.colorbar(mappable, ax=ax, drawedges=False, orientation=orientation)
         "num_x": 0.04,
         "num_ha": "left",
         "text_always": False,
@@ -387,7 +391,19 @@ def render_table(style: dict, data: dict, title: str = None,
     :param title:      可选图标题（仅自定义模式使用；原脚本无标题）
     :param show_cbar:  是否显示颜色条（False 时不创建 colorbar；原脚本行为为 True）
     :param figsize:    图尺寸（英寸，宽, 高）；默认 (10, 5) 与原脚本一致
+
+    Custom-only optional style keys (omitting them preserves legacy output):
+    symbol_fs=9, number_fs=6, value_fs=6 (heatmap) / label_fs or 8 (labels),
+    show_symbol/show_number/show_value=True, label_color (value text),
+    bg="#f0f0f0" (label cells), highlight_bg (populated label cells),
+    highlight_fg="white" (highlighted text), edge=None or (width, color),
+    cbar_orientation="vertical" or "horizontal", cbar_label="",
+    transparent=False (figure/axes background only; cell colors unchanged).
+    Reconstructed marker rows follow number/symbol/value controls respectively.
+    Existing cbar={ticks, labels, fontsize} remains supported in both directions.
     """
+    for value in data.values():
+        _coerce(value)  # Direct callers also must reject NaN/Inf.
     layout = style["layout"]
     elements = build_elements(layout, data)
     xy_bounds = xy_bounds_for(layout)
@@ -396,151 +412,194 @@ def render_table(style: dict, data: dict, title: str = None,
         # 色图预览器是独立功能（render_cmap_preview），不渲染周期表
         raise ValueError("色图预览器模式无需渲染周期表（使用 render_cmap_preview）")
 
+    custom = style.get("id") == "custom"
+    if custom:
+        for key in ("symbol_fs", "number_fs", "value_fs"):
+            if key in style:
+                size = style[key]
+                if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or size <= 0:
+                    raise ValueError(f"{key} 必须是有限正数")
+        for key in ("show_symbol", "show_number", "show_value", "transparent"):
+            if key in style and not isinstance(style[key], bool):
+                raise ValueError(f"{key} 必须为 bool")
+        if style.get("cbar_orientation", "vertical") not in ("vertical", "horizontal"):
+            raise ValueError("cbar_orientation 必须为 vertical 或 horizontal")
+        if style.get("edge") is not None:
+            width, color = style["edge"]
+            if not math.isfinite(width) or width < 0:
+                raise ValueError("edge 线宽必须是有限非负数")
+
     fig, ax = plt.subplots(figsize=figsize)
-    ax.set_xlim(0, xy_bounds[0])
-    ax.set_ylim(0, xy_bounds[1])
-    ax.set_aspect("equal")
-    ax.axis("off")
+    try:
+        def draw_text(role, *args, **kwargs):
+            if custom:
+                if not style.get(f"show_{role}", True):
+                    return None
+                kwargs["fontsize"] = style.get(f"{role}_fs", kwargs.get("fontsize"))
+                if role == "value" and "label_color" in style:
+                    kwargs["color"] = style["label_color"]
+            return ax.text(*args, **kwargs)
 
-    # ---- 颜色映射 / 归一化 / 颜色条（与原脚本一样先建颜色条）----
-    cmap = norm = mappable = cbar = None
-    if kind == "heatmap":
-        cmap = _make_cmap(style)
-        norm = _make_norm(style)
-        mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
-        if show_cbar:
-            cbar_style = style.get("cbar_style", "standard")
-            if cbar_style == "plain":
-                # 图1：plt.colorbar(cmmapable, drawedges=False)
-                # （matplotlib 3.11 起需显式 ax，否则报错）
-                cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
-            elif cbar_style == "ax_plain":
-                # 图2/3/5：fig.colorbar(mappable, ax=ax, drawedges=False)
-                cbar = fig.colorbar(mappable, ax=ax, drawedges=False)
-            else:
-                # 重构系列 / 图6/8/9：fraction=0.046, pad=0.04, vertical
-                cbar = fig.colorbar(mappable, ax=ax, drawedges=False,
-                                    orientation="vertical", fraction=0.046, pad=0.04)
-            if style.get("cbar"):
-                cfg = style["cbar"]
-                cbar.set_ticks(cfg["ticks"])
-                cbar.set_ticklabels(cfg["labels"])
-                cbar.ax.set_yticklabels(cfg["labels"], fontsize=cfg["fontsize"])
+        ax.set_xlim(0, xy_bounds[0])
+        ax.set_ylim(0, xy_bounds[1])
+        ax.set_aspect("equal")
+        ax.axis("off")
 
-    # ---- 通用绘制参数 ----
-    edge = style.get("edge")
-    font = style.get("font", "Arial")
-    text_always = style.get("text_always", False)
-    num_x = style.get("num_x", 0.2)
-    num_ha = style.get("num_ha", "center")
-
-    # ---- 绘制格子与文本 ----
-    for elem in elements:
-        num, symbol, group, period, value = elem
-        if group is None:
-            continue
-
-        x = CELL_STEP * (group - 1)
-        y = xy_bounds[1] - CELL_STEP * period
-        if period >= 8:                     # 镧系/锕系行上移半格
-            y -= 0.5
-
-        # ----- 格子 -----
-        # 注意：重构系列的原脚本对镧系/锕系标注块（symbol 为 tuple、num 为 None）
-        # 也画一个浅灰背景格子（add_patch 无条件执行）；经典系列的 LA/AC 标记不画。
-        draw_cell = num is not None or isinstance(symbol, tuple)
-        if draw_cell:
-            if kind == "heatmap":
-                if text_always:
-                    # 图1：所有有原子序数的元素都画矩形（0 值 → under 色）
-                    facecolor = cmap(norm(value))
+        # ---- 颜色映射 / 归一化 / 颜色条（与原脚本一样先建颜色条）----
+        cmap = norm = mappable = cbar = None
+        if kind == "heatmap":
+            cmap = _make_cmap(style)
+            norm = _make_norm(style)
+            mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+            if show_cbar:
+                cbar_style = style.get("cbar_style", "standard")
+                orientation = style.get("cbar_orientation", "vertical") if custom else "vertical"
+                if cbar_style == "plain":
+                    # 图1：plt.colorbar(cmmapable, drawedges=False)
+                    # （matplotlib 3.11 起需显式 ax，否则报错）
+                    cbar = fig.colorbar(mappable, ax=ax, drawedges=False, orientation=orientation)
+                elif cbar_style == "ax_plain":
+                    # 图2/3/5：fig.colorbar(mappable, ax=ax, drawedges=False, orientation=orientation)
+                    cbar = fig.colorbar(mappable, ax=ax, drawedges=False, orientation=orientation)
                 else:
-                    facecolor = cmap(norm(value)) if value else style["empty"]
+                    # 重构系列 / 图6/8/9：fraction=0.046, pad=0.04, vertical
+                    cbar = fig.colorbar(mappable, ax=ax, drawedges=False,
+                                        orientation=orientation, fraction=0.046, pad=0.04)
+                if style.get("cbar"):
+                    cfg = style["cbar"]
+                    cbar.set_ticks(cfg["ticks"])
+                    cbar.set_ticklabels(cfg["labels"])
+                    if orientation == "horizontal":
+                        cbar.ax.set_xticklabels(cfg["labels"], fontsize=cfg["fontsize"])
+                    else:
+                        cbar.ax.set_yticklabels(cfg["labels"], fontsize=cfg["fontsize"])
+                if custom and style.get("cbar_label"):
+                    cbar.set_label(style["cbar_label"])
+
+        # ---- 通用绘制参数 ----
+        edge = style.get("edge")
+        font = style.get("font", "Arial")
+        text_always = style.get("text_always", False)
+        num_x = style.get("num_x", 0.2)
+        num_ha = style.get("num_ha", "center")
+
+        # ---- 绘制格子与文本 ----
+        for elem in elements:
+            num, symbol, group, period, value = elem
+            has_value = (num is not None and symbol in data and value is not None) \
+                if style.get("id") == "custom" else bool(value)
+            if group is None:
+                continue
+
+            x = CELL_STEP * (group - 1)
+            y = xy_bounds[1] - CELL_STEP * period
+            if period >= 8:                     # 镧系/锕系行上移半格
+                y -= 0.5
+
+            # ----- 格子 -----
+            # 注意：重构系列的原脚本对镧系/锕系标注块（symbol 为 tuple、num 为 None）
+            # 也画一个浅灰背景格子（add_patch 无条件执行）；经典系列的 LA/AC 标记不画。
+            draw_cell = num is not None or isinstance(symbol, tuple)
+            if draw_cell:
+                if kind == "heatmap":
+                    if text_always:
+                        # 图1：所有有原子序数的元素都画矩形（0 值 → under 色）
+                        facecolor = cmap(norm(value))
+                    else:
+                        facecolor = cmap(norm(value)) if has_value else style["empty"]
+                elif kind == "labels":
+                    if "highlight_bg" in style:
+                        facecolor = style["highlight_bg"] if has_value else style.get("plain_bg", style.get("bg", "#f0f0f0"))
+                    else:
+                        facecolor = style.get("bg", "#f0f0f0")
+
+                if edge:
+                    lw, ec = edge
+                else:
+                    lw, ec = 0, "none"
+
+                rect = patches.Rectangle((x, y), 1, 1,
+                                         linewidth=lw, edgecolor=ec, facecolor=facecolor)
+                ax.add_patch(rect)
+
+            # ----- 文本 -----
+            # 注意：text_props 只含 fontfamily / va（ha 与 color 均显式传递），
+            # 避免与原脚本中"显式 ha / color + 重复键"的 bug 冲突。
+            text_props = {"fontfamily": font, "va": "center"}
+
+            if kind == "heatmap":
+                base_color = "black"
             elif kind == "labels":
                 if "highlight_bg" in style:
-                    facecolor = style["highlight_bg"] if value else style["plain_bg"]
+                    base_color = style.get("highlight_fg", "white") if has_value else style.get("plain_fg", "black")
                 else:
-                    facecolor = style.get("bg", "#f0f0f0")
+                    base_color = "black"
 
-            if edge:
-                lw, ec = edge
-            else:
-                lw, ec = 0, "none"
-
-            rect = patches.Rectangle((x, y), 1, 1,
-                                     linewidth=lw, edgecolor=ec, facecolor=facecolor)
-            ax.add_patch(rect)
-
-        # ----- 文本 -----
-        # 注意：text_props 只含 fontfamily / va（ha 与 color 均显式传递），
-        # 避免与原脚本中"显式 ha / color + 重复键"的 bug 冲突。
-        text_props = {"fontfamily": font, "va": "center"}
-
-        if kind == "heatmap":
-            base_color = "black"
-        elif kind == "labels":
-            if "highlight_bg" in style:
-                base_color = style["highlight_fg"] if value else style["plain_fg"]
-            else:
-                base_color = "black"
-
-        if num is not None:
-            ax.text(x + num_x, y + 0.8, str(num), fontsize=6, ha=num_ha,
-                    color=base_color, **text_props)
-        elif text_always:
-            # 图1 原行为：对标记元素也画文本（matplotlib 将 None 显示为空）
-            ax.text(x + num_x, y + 0.8, num, fontsize=6, ha=num_ha,
-                    color=base_color, **text_props)
-
-        if isinstance(symbol, tuple):
-            # 重构系列的三行标注块
-            line1, line2, line3 = symbol
-            if kind == "labels":
-                ax.text(x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
-                        color="black", **text_props)
-                ax.text(x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
-                        ha="center", color="black", **text_props)
-                ax.text(x + 0.5, y + 0.12, line3, fontsize=7,
-                        color=style.get("label_color", "#666666"), ha="center", **text_props)
-            else:
-                ax.text(x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
-                        color="black", **text_props)
-                ax.text(x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
-                        ha="center", color="black", **text_props)
-                ax.text(x + 0.5, y + 0.12, line3, fontsize=6, ha="center",
-                        color="black", **text_props)
-        else:
-            ax.text(x + 0.5, y + 0.5, symbol, fontsize=9, weight="bold",
-                    ha="center", color=base_color, **text_props)
-
-            if kind == "heatmap" and text_always:
-                # 图1 原行为：无条件绘制数值文本（0 值显示 '0'，None 显示空）
-                if value is None:
-                    ax.text(x + 0.5, y + 0.12, None, fontsize=6, ha="center",
-                            color=base_color, **text_props)
-                else:
-                    ax.text(x + 0.5, y + 0.12, _fmt_value(value, style["fmt"]),
-                            fontsize=6, ha="center", color=base_color, **text_props)
-            elif kind == "heatmap" and value:
-                text = _fmt_value(value, style["fmt"])
-                ax.text(x + 0.5, y + 0.12, text, fontsize=6, ha="center",
+            if num is not None:
+                draw_text("number", x + num_x, y + 0.8, str(num), fontsize=6, ha=num_ha,
                         color=base_color, **text_props)
-            elif kind == "labels" and value:
-                if "highlight_bg" in style:
-                    # 高亮标注：文字颜色随格子（深蓝底白字 / 浅灰底黑字）
-                    label_color = base_color
+            elif text_always:
+                # 图1 原行为：对标记元素也画文本（matplotlib 将 None 显示为空）
+                draw_text("number", x + num_x, y + 0.8, num, fontsize=6, ha=num_ha,
+                        color=base_color, **text_props)
+
+            if isinstance(symbol, tuple):
+                # 重构系列的三行标注块
+                line1, line2, line3 = symbol
+                if kind == "labels":
+                    draw_text("number", x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
+                            color="black", **text_props)
+                    draw_text("symbol", x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
+                            ha="center", color="black", **text_props)
+                    draw_text("value", x + 0.5, y + 0.12, line3, fontsize=7,
+                            color=style.get("label_color", "#666666"), ha="center", **text_props)
                 else:
-                    # 浅灰底标注（明城01）：标注文本为深灰色 #666666
-                    label_color = style.get("label_color", "#666666")
-                ax.text(x + 0.5, y + style.get("label_dy", 0.12), value,
-                        fontsize=style.get("label_fs", 8), ha="center",
-                        color=label_color, **text_props)
+                    draw_text("number", x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
+                            color="black", **text_props)
+                    draw_text("symbol", x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
+                            ha="center", color="black", **text_props)
+                    draw_text("value", x + 0.5, y + 0.12, line3, fontsize=6, ha="center",
+                            color="black", **text_props)
+            else:
+                draw_text("symbol", x + 0.5, y + 0.5, symbol, fontsize=9, weight="bold",
+                        ha="center", color=base_color, **text_props)
 
-    if title:
-        fig.suptitle(title, fontsize=14)
+                if kind == "heatmap" and text_always:
+                    # 图1 原行为：无条件绘制数值文本（0 值显示 '0'，None 显示空）
+                    if value is None:
+                        draw_text("value", x + 0.5, y + 0.12, None, fontsize=6, ha="center",
+                                color=base_color, **text_props)
+                    else:
+                        draw_text("value", x + 0.5, y + 0.12, _fmt_value(value, style["fmt"]),
+                                fontsize=6, ha="center", color=base_color, **text_props)
+                elif kind == "heatmap" and has_value:
+                    text = _fmt_value(value, style["fmt"])
+                    draw_text("value", x + 0.5, y + 0.12, text, fontsize=6, ha="center",
+                            color=base_color, **text_props)
+                elif kind == "labels" and has_value:
+                    if "highlight_bg" in style:
+                        # 高亮标注：文字颜色随格子（深蓝底白字 / 浅灰底黑字）
+                        label_color = base_color
+                    else:
+                        # 浅灰底标注（明城01）：标注文本为深灰色 #666666
+                        label_color = style.get("label_color", "#666666")
+                    draw_text("value", x + 0.5, y + style.get("label_dy", 0.12), value,
+                            fontsize=style.get("label_fs", 8), ha="center",
+                            color=label_color, **text_props)
 
-    plt.tight_layout()
-    return fig
+        if title:
+            fig.suptitle(title, fontsize=14)
+
+        if custom and style.get("transparent", False):
+            fig.patch.set_alpha(0)
+            for figure_ax in fig.axes:
+                figure_ax.patch.set_alpha(0)
+        apply_text_fallbacks(fig)
+        plt.tight_layout()
+        return fig
+    except BaseException:
+        plt.close(fig)
+        raise
 
 
 def render_cmap_preview(out_dir: str, cmaps=None):
@@ -562,12 +621,14 @@ def render_cmap_preview(out_dir: str, cmaps=None):
             skipped.append(color_map)
             continue
         fig, ax = plt.subplots()
-        im = ax.imshow(data, cmap=color_map)
-        fig.colorbar(im, ax=ax)
-        ax.set_title(color_map)
-        path = auto_name(out_dir, f"cmap_{color_map}", "png")
-        fig.savefig(path)
-        plt.close(fig)
+        try:
+            im = ax.imshow(data, cmap=color_map)
+            fig.colorbar(im, ax=ax)
+            ax.set_title(color_map)
+            path = auto_name(out_dir, f"cmap_{color_map}", "png")
+            fig.savefig(path)
+        finally:
+            plt.close(fig)
         generated.append(path)
 
     if skipped:

@@ -45,12 +45,10 @@ def _smoke_log(msg):
             pass
 
 
+# Tk 仅承载应用界面；所有绘图均离屏渲染，打包版也不创建额外 Figure 窗口。
 _smoke_log("import:before_matplotlib")
-# exe 内显式使用 TkAgg 后端（保证预览画布与 PyInstaller hook 收集）；
-# 源码/测试环境保持默认（不污染测试进程）。
-if getattr(sys, "frozen", False):
-    import matplotlib
-    matplotlib.use("TkAgg")
+import matplotlib
+matplotlib.use("Agg")
 _smoke_log("import:after_matplotlib")
 
 from core import (STYLES, parse_data, validate_data, demo_data,
@@ -58,6 +56,8 @@ from core import (STYLES, parse_data, validate_data, demo_data,
                   save_figure, auto_name, PresetStore)
 from core.ptable import build_elements, xy_bounds_for, CELL_STEP
 from core.elements_data import ALL_SYMBOLS
+from ui.preview import PreviewCanvas
+from ui.scrolling import ScrollableFrame
 _smoke_log("import:after_core")
 
 SYMBOLS = set(ALL_SYMBOLS)
@@ -80,10 +80,10 @@ SCALE_OPTIONS = (
     ("1.5", "150%"),
 )
 # 预览区域占右侧上部的高度比例（可手动调节）
-PREVIEW_RATIO_OPTIONS = (0.4, 0.5, 0.6)
+PREVIEW_RATIO_OPTIONS = (0.4, 0.5, 0.6, 0.72, 0.85)
 BASE_FONT_SIZE = 10          # 100% 缩放时的基准字号
 BASE_WINDOW_WIDTH = 1280     # auto 缩放的基准窗口宽度
-SCALE_RANGE = (0.8, 1.5)     # auto 缩放的上下限
+SCALE_RANGE = (0.9, 1.5)     # auto 缩放的上下限
 
 # 自定义模式高级参数：GUI 中文标签 → 样式值（反向映射用于回填）
 LAYOUT_CHOICES = {"镧锕三行块（重构）": "reconstructed",
@@ -110,71 +110,6 @@ def _rgb_to_hex(rgb) -> str:
 def _hex_to_rgb(hex_str) -> tuple:
     hex_str = hex_str.lstrip("#")
     return tuple(int(hex_str[i:i + 2], 16) / 255 for i in (0, 2, 4))
-
-
-# ---------------------------------------------------------------------------
-# 预览画布
-# ---------------------------------------------------------------------------
-class PreviewCanvas(tk.Frame):
-    """嵌入的 matplotlib 预览画布，支持点击命中元素。"""
-
-    def __init__(self, master, on_click=None, **kw):
-        super().__init__(master, **kw)
-        self.on_click = on_click
-        self.fig = None
-        self.canvas = None
-        self.hit_map = {}
-        self._placeholder = None
-        try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-            self._CanvasCls = FigureCanvasTkAgg
-        except Exception:
-            self._CanvasCls = None
-
-    def show(self, fig, hit_map: dict):
-        """显示新渲染的 figure，并更新点击命中表。"""
-        if self.canvas is not None:
-            try:
-                self.canvas.get_tk_widget().destroy()
-            except Exception:
-                pass
-            self.canvas = None
-        # 关闭旧 figure，避免 matplotlib 状态机持有导致内存累积
-        old_fig = self.fig
-        self.fig = fig
-        if old_fig is not None and old_fig is not fig:
-            import matplotlib.pyplot as plt
-            plt.close(old_fig)
-        self.hit_map = hit_map or {}
-        if self._CanvasCls is None:
-            if self._placeholder is None:
-                self._placeholder = tk.Label(
-                    self, text="实时预览不可用（缺少 TkAgg 后端，不影响出图）",
-                    fg="#888888")
-                self._placeholder.pack(fill="both", expand=True)
-            return
-        if self._placeholder is not None:
-            self._placeholder.destroy()
-            self._placeholder = None
-        self.canvas = self._CanvasCls(fig, master=self)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
-        self.canvas.mpl_connect("button_press_event", self._on_click)
-        self.canvas.draw()
-
-    def _on_click(self, event):
-        if event.inaxes is None or event.button != 1:
-            return
-        sym = self.hit_test(event.xdata, event.ydata)
-        if sym and self.on_click:
-            self.on_click(sym)
-
-    def hit_test(self, x, y):
-        if x is None or y is None:
-            return None
-        for (x0, y0, x1, y1), sym in self.hit_map.items():
-            if x0 <= x <= x1 and y0 <= y <= y1:
-                return sym
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -283,9 +218,12 @@ class DataTable(tk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工具 v1.2")
-        self.geometry("1280x920")
-        self.minsize(1080, 720)
+        self.title("元素周期表绘图工作台 · 重设计版")
+        self.geometry("1180x760")
+        self.minsize(800, 560)
+        self._refresh_job = None
+        self._ratio_job = None
+        self._preview_error = None
 
         self.out_dir = os.path.join(PROJECT_ROOT, "output")
         self.last_output = None
@@ -298,17 +236,12 @@ class App(tk.Tk):
         self._current_layout = None          # 当前实际生效的布局
         self.layout_mode = "auto"            # 用户选择：auto / split-h / split-v
         self.scale_mode = "auto"             # 界面缩放：auto 或 "0.8"/"1.0"/"1.25"/"1.5"
-        self.preview_ratio = 0.5             # 预览区域高度占比（右侧上部）
+        self.preview_ratio = 0.72             # 预览区域高度占比（右侧上部）
         self._current_scale = None           # 已应用的缩放值（防抖）
-        self._last_preview_size = (0, 0)     # 预览画布上次尺寸（防抖）
         self._app_font = None
         self.cbar_override = None            # 颜色条标注自定义（None=用样式默认）
         self._load_config()
-        if isinstance(self._config.get("geometry"), str):
-            try:
-                self.geometry(self._config["geometry"])
-            except tk.TclError:
-                pass
+        self._restore_geometry()
 
         self._build_ui()
         self._on_style_change()
@@ -317,6 +250,19 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
+    def _restore_geometry(self):
+        """以 Tk 的逻辑像素限幅并居中，丢弃旧屏幕坐标与超屏尺寸。"""
+        import re
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        available_w, available_h = max(320, screen_w - 80), max(300, screen_h - 120)
+        match = re.match(r"^(\d+)x(\d+)", str(self._config.get("geometry", "")))
+        width, height = (map(int, match.groups()) if match else (1180, 760))
+        min_w, min_h = min(800, available_w), min(560, available_h)
+        width = max(min_w, min(width, available_w))
+        height = max(min_h, min(height, available_h))
+        self.minsize(min_w, min_h)
+        self.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
+
     def _load_config(self):
         """读取用户配置（布局模式、窗口尺寸、界面缩放、预览比例）。"""
         cfg = {}
@@ -335,10 +281,10 @@ class App(tk.Tk):
         self.scale_mode = (scale if isinstance(scale, str)
                            and scale in dict(SCALE_OPTIONS) else "auto")
         try:
-            ratio = float(cfg.get("preview_ratio", 0.5))
-            self.preview_ratio = ratio if ratio in PREVIEW_RATIO_OPTIONS else 0.5
+            ratio = float(cfg.get("preview_ratio", 0.72))
+            self.preview_ratio = ratio if 0.35 <= ratio <= 0.9 else 0.72
         except (TypeError, ValueError):
-            self.preview_ratio = 0.5
+            self.preview_ratio = 0.72
 
     def _save_config(self):
         """保存用户配置（布局模式、窗口尺寸、界面缩放、预览比例）。"""
@@ -354,6 +300,13 @@ class App(tk.Tk):
         except OSError:
             pass
 
+    def destroy(self):
+        self._cancel_refresh()
+        if self._ratio_job is not None:
+            self.after_cancel(self._ratio_job)
+            self._ratio_job = None
+        super().destroy()
+
     def _on_close(self):
         self._save_config()
         self.destroy()
@@ -362,20 +315,10 @@ class App(tk.Tk):
     # 布局
     # ------------------------------------------------------------------
     def _effective_layout(self) -> str:
-        """auto 模式下按当前窗口宽度决定实际布局。"""
-        if self.layout_mode == "auto":
-            try:
-                width = self.winfo_width()
-            except tk.TclError:
-                width = 0
-            if width <= 1:
-                # 窗口尚未映射：用默认宽布局，避免启动闪变
-                return "split-h"
-            return "split-v" if width < AUTO_SPLIT_THRESHOLD else "split-h"
-        return self.layout_mode
+        """自动布局始终保留侧栏；旧配置的手动上下布局仍可使用。"""
+        return "split-v" if self.layout_mode == "split-v" else "split-h"
 
     def _apply_layout(self):
-        """根据布局模式重新摆放控制面板与主区（左右/上下）。"""
         if self._main is None:
             return
         layout = self._effective_layout()
@@ -383,29 +326,21 @@ class App(tk.Tk):
             return
         self._current_layout = layout
         main = self._main
+        for index in (0, 1):
+            main.rowconfigure(index, weight=0, minsize=0)
+            main.columnconfigure(index, weight=0, minsize=0)
         if layout == "split-h":
-            main.columnconfigure(0, weight=0)
+            main.rowconfigure(0, weight=1)
             main.columnconfigure(1, weight=1)
-            main.rowconfigure(0, weight=0)
-            main.rowconfigure(1, weight=1)
-            self._left.grid(row=0, column=0, rowspan=2,
-                            sticky="ns", padx=(0, 8), pady=0)
-            self._right.grid(row=0, column=1, rowspan=1,
-                             sticky="nsew", padx=0, pady=0)
-        else:   # split-v：上下分栏（注意 rowspan 必须显式重置，grid 配置是增量更新的）
+            self._left.configure(width=330, height=200)
+            self._left.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
+            self._right.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        else:
             main.columnconfigure(0, weight=1)
-            main.columnconfigure(1, weight=0)
-            main.rowconfigure(0, weight=0)
             main.rowconfigure(1, weight=1)
-            self._left.grid(row=0, column=0, rowspan=1,
-                            sticky="ew", padx=0, pady=(0, 6))
-            self._right.grid(row=1, column=0, rowspan=1,
-                             sticky="nsew", padx=0, pady=0)
-        # 状态栏始终占满底部
-        for child in main.winfo_children():
-            if child is self._status:
-                child.grid(row=2, column=0, columnspan=2, sticky="ew",
-                           pady=(6, 0))
+            self._left.configure(height=190)
+            self._left.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
+            self._right.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
 
     def _on_window_resize(self, event):
         if event.widget is not self:
@@ -456,35 +391,27 @@ class App(tk.Tk):
             style.configure("Treeview.Heading", font=self._app_font)
         except tk.TclError:
             pass
+        if self._current_layout == "split-h":
+            self._left.configure(width=round(330 * max(1.0, scale / 1.1)))
         self._resize_preview()
 
     def _apply_preview_ratio(self):
-        """按预览区域比例调整右侧上（预览）/下（数据）区域的权重。"""
+        """调节真实可拖动的预览 / 数据分隔条。"""
         if self._right is None:
             return
-        self._right.rowconfigure(0, weight=int(self.preview_ratio * 10))
-        self._right.rowconfigure(1, weight=int((1 - self.preview_ratio) * 10))
+        height = self._right.winfo_height()
+        if height > 1:
+            self._right.sash_place(0, 0, int(height * self.preview_ratio))
+
+    def _remember_preview_ratio(self, event=None):
+        height = self._right.winfo_height()
+        if height > 1:
+            self.preview_ratio = max(.35, min(.9, self._right.sash_coord(0)[1] / height))
+            self.ratio_var.set(self.preview_ratio)
 
     def _resize_preview(self):
-        """预览画布随窗口尺寸自适应（figure 重设尺寸，防抖）。"""
-        pv = self.preview
-        if pv.canvas is None or pv.fig is None:
-            return
-        try:
-            w = pv.winfo_width()
-            h = pv.winfo_height()
-        except tk.TclError:
-            return
-        if w <= 10 or h <= 10 or (w, h) == self._last_preview_size:
-            return
-        self._last_preview_size = (w, h)
-        try:
-            dpi = self.winfo_fpixels("1i")
-            pv.fig.set_size_inches(max(w / dpi, 4.0), max(h / dpi, 2.0))
-            pv.fig.tight_layout()
-            pv.canvas.draw()
-        except Exception:
-            pass
+        """仅缩放预览图像，保留配置的 Figure 画幅和构图。"""
+        self.preview.resize()
 
     def _on_scale_change(self, *args):
         self.scale_mode = self.scale_var.get()
@@ -506,275 +433,247 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _build_ui(self):
-        # 视图菜单（布局设置、界面缩放、预览比例）
         menubar = tk.Menu(self)
         view_menu = tk.Menu(menubar, tearoff=0)
         self.layout_var = tk.StringVar(value=self.layout_mode)
         for mode, label in LAYOUT_MODES:
-            view_menu.add_radiobutton(
-                label=label, variable=self.layout_var, value=mode,
-                command=self._on_layout_mode_change)
-        view_menu.add_separator()
-        # 界面缩放
+            view_menu.add_radiobutton(label=label, variable=self.layout_var,
+                                     value=mode, command=self._on_layout_mode_change)
         self.scale_var = tk.StringVar(value=self.scale_mode)
         scale_menu = tk.Menu(view_menu, tearoff=0)
-        for val, label in SCALE_OPTIONS:
-            scale_menu.add_radiobutton(
-                label=label, variable=self.scale_var, value=val,
-                command=self._on_scale_change)
-        view_menu.add_cascade(label="界面缩放（字号/控件）", menu=scale_menu)
-        # 预览区域比例
+        for value, label in SCALE_OPTIONS:
+            scale_menu.add_radiobutton(label=label, variable=self.scale_var,
+                                      value=value, command=self._on_scale_change)
+        view_menu.add_cascade(label="界面缩放", menu=scale_menu)
         self.ratio_var = tk.DoubleVar(value=self.preview_ratio)
         ratio_menu = tk.Menu(view_menu, tearoff=0)
-        for r in PREVIEW_RATIO_OPTIONS:
-            ratio_menu.add_radiobutton(
-                label=f"预览区 {int(r * 100)}% / 数据区 {int((1 - r) * 100)}%",
-                variable=self.ratio_var, value=r,
-                command=self._on_ratio_change)
-        view_menu.add_cascade(label="预览区域大小", menu=ratio_menu)
+        for ratio in PREVIEW_RATIO_OPTIONS:
+            ratio_menu.add_radiobutton(label=f"预览区 {ratio:.0%}", variable=self.ratio_var,
+                                      value=ratio, command=self._on_ratio_change)
+        view_menu.add_cascade(label="预览区域大小（也可拖动分隔条）", menu=ratio_menu)
         menubar.add_cascade(label="视图", menu=view_menu)
         self.config(menu=menubar)
 
-        main = ttk.Frame(self, padding=8)
+        # 工具栏与状态栏独立于可滚动内容，始终保持可见。
+        self.toolbar = ttk.Frame(self, padding=(8, 6))
+        self.toolbar.pack(side="top", fill="x")
+        style = ttk.Style(self)
+        style.configure("TButton", padding=(8, 5))
+        style.configure("TNotebook.Tab", padding=(9, 6))
+        style.configure("Export.TButton", font=("Microsoft YaHei", 10, "bold"), padding=(14, 6))
+        self.toolbar_buttons = {}
+        for label, command in (("导入文件", self._import_file), ("粘贴数据", self._paste_data),
+                               ("载入示例", self._load_demo), ("导出图片", self.generate),
+                               ("打开输出目录", self._open_out_dir)):
+            button = ttk.Button(self.toolbar, text=label, command=command,
+                                style="Export.TButton" if label == "导出图片" else "TButton")
+            button.pack(side="left", padx=(0, 6))
+            self.toolbar_buttons[label] = button
+        self._status = ttk.Frame(self, padding=(8, 4))
+        self._status.pack(side="bottom", fill="x")
+        self.status_var = tk.StringVar(value="就绪 · 导入、粘贴或载入示例开始绘图")
+        ttk.Label(self._status, textvariable=self.status_var, anchor="w").pack(fill="x")
+        main = self._main = ttk.Frame(self, padding=(8, 0, 8, 0))
         main.pack(fill="both", expand=True)
-        main.columnconfigure(1, weight=1)
-        main.rowconfigure(1, weight=1)
-        self._main = main
+        left = self._left = ttk.Frame(main, width=330, height=200)
+        left.pack_propagate(False)
+        self.settings_notebook = ttk.Notebook(left)
+        self.settings_notebook.pack(fill="both", expand=True)
+        self.settings_pages = {}
+        for key, label in (("figure", "图形"), ("colors", "配色 / 颜色条"),
+                           ("export", "预设 / 导出")):
+            page = ScrollableFrame(self.settings_notebook)
+            self.settings_notebook.add(page, text=label)
+            self.settings_pages[key] = page
+        graph = self.settings_pages["figure"].content
+        colors = self.settings_pages["colors"].content
+        export = self.settings_pages["export"].content
 
-        # ================= 左侧控制面板 =================
-        left = ttk.LabelFrame(main, text="绘图设置", padding=8)
-        self._left = left
-
-        ttk.Label(left, text="绘图模式").grid(row=0, column=0, sticky="w")
+        ttk.Label(graph, text="绘图模式").pack(anchor="w")
         self.mode_var = tk.StringVar()
-        self.mode_combo = ttk.Combobox(left, textvariable=self.mode_var,
-                                       state="readonly", width=30)
-        self.mode_combo["values"] = [s["name"] for s in STYLES.values()]
-        self.mode_combo.grid(row=0, column=1, columnspan=3, sticky="we", pady=(2, 8))
+        self.mode_combo = ttk.Combobox(graph, textvariable=self.mode_var, state="readonly",
+                                      values=[s["name"] for s in STYLES.values()], width=20)
+        self.mode_combo.pack(fill="x", pady=(2, 6))
+        self.mode_combo.current(list(STYLES).index("custom"))
         self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_style_change())
-        self.mode_combo.current(0)
+        self.file_label = ttk.Label(graph, foreground="#666666", wraplength=280)
+        self.file_label.pack(anchor="w")
+        self.hint_label = ttk.Label(graph, foreground="#666666", wraplength=280)
+        self.hint_label.pack(fill="x", pady=(2, 8))
+        self.param_vars, self.param_entries = {}, {}
+        self.custom_controls = []
 
-        self.file_label = ttk.Label(left, text="", foreground="#666666", wraplength=280)
-        self.file_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 6))
-
-        # 参数（自定义模式全部可调；其他模式只读显示）
-        params = [
-            ("cmap", "颜色映射", "entry"),
-            ("vmin", "最小值 vmin", "entry"),
-            ("vcenter", "中心值 vcenter", "entry"),
-            ("vmax", "最大值 vmax", "entry"),
-            ("fmt", "数值格式", "combo", list(FMT_CHOICES)),
-            ("layout", "元素布局", "combo", list(LAYOUT_CHOICES)),
-            ("kind", "图表类型", "combo", list(KIND_CHOICES)),
-            ("font", "字体", "combo", list(FONT_CHOICES)),
-            ("edge", "格子边框", "combo", list(EDGE_CHOICES)),
-            ("empty", "空值格颜色", "combo", list(EMPTY_CHOICES)),
-            ("dpi", "输出分辨率 dpi", "combo", list(DPI_CHOICES)),
-            ("figsize", "图尺寸(宽x高 英寸)", "entry"),
-            ("title", "图标题", "entry"),
-        ]
-        self.param_vars = {}
-        self.param_entries = {}
-        for r, spec in enumerate(params, start=2):
-            key, label = spec[0], spec[1]
-            ttk.Label(left, text=label).grid(row=r, column=0, sticky="w")
+        def field(parent, key, label, choices=None):
+            ttk.Label(parent, text=label).pack(anchor="w", pady=(5, 1))
             var = tk.StringVar()
-            if spec[2] == "combo":
-                widget = ttk.Combobox(left, textvariable=var, state="readonly",
-                                      values=spec[3], width=20)
-                widget.bind("<<ComboboxSelected>>",
-                            lambda e: self._refresh_preview())
-            else:
-                widget = ttk.Entry(left, textvariable=var, width=24)
-                widget.bind("<KeyRelease>", lambda e: self._refresh_preview())
-            widget.grid(row=r, column=1, columnspan=3, sticky="we", pady=1)
-            self.param_vars[key] = var
-            self.param_entries[key] = widget
+            widget = (ttk.Combobox(parent, textvariable=var, values=choices,
+                                   state="readonly", width=16) if choices else
+                      ttk.Entry(parent, textvariable=var, width=16))
+            widget.pack(fill="x", pady=(0, 2))
+            var.trace_add("write", lambda *args: self._refresh_preview())
+            self.param_vars[key], self.param_entries[key] = var, widget
 
-        # 颜色条开关
-        r = 15
-        self.show_cbar_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(left, text="显示颜色条", variable=self.show_cbar_var,
-                        command=self._refresh_preview).grid(
-            row=r, column=0, columnspan=4, sticky="w", pady=(8, 2))
+        for key, label, choices in (
+            ("layout", "元素布局", list(LAYOUT_CHOICES)),
+            ("kind", "图表类型", list(KIND_CHOICES)),
+            ("title", "图标题", None), ("font", "字体（可输入本机字体名称）", sorted(set(tkfont.families(self)) | set(FONT_CHOICES) | {"Microsoft YaHei", "SimHei", "SimSun"})),
+            ("fmt", "数值格式", list(FMT_CHOICES)),
+            ("symbol_fs", "元素符号字号（pt）", None),
+            ("number_fs", "原子序数字号（pt）", None),
+            ("value_fs", "数值 / 标注字号（pt）", None),
+            ("edge", "格子边框", list(EDGE_CHOICES)),
+            ("empty", "空值格颜色", list(EMPTY_CHOICES))):
+            field(graph, key, label, choices)
+        self.bool_vars = {}
+        for key, label, parent, default in (
+            ("show_symbol", "显示元素符号", graph, True),
+            ("show_number", "显示原子序数", graph, True),
+            ("show_value", "显示数值 / 标注", graph, True),
+            ("transparent", "透明背景", export, False)):
+            var = tk.BooleanVar(value=default)
+            self.bool_vars[key] = var
+            setattr(self, key + "_var", var)
+            button = ttk.Checkbutton(parent, text=label, variable=var, command=self._refresh_preview)
+            button.pack(anchor="w", pady=3)
+            self.custom_controls.append(button)
 
-        # ---- 颜色条标注（刻度自定义）----
-        cbar_lf = ttk.LabelFrame(
-            left, text="颜色条标注（刻度与标签可增删改）", padding=4)
-        cbar_lf.grid(row=r + 1, column=0, columnspan=4, sticky="we", pady=(4, 2))
-        self.cbar_tree = ttk.Treeview(cbar_lf, columns=("v", "l"),
-                                      show="headings", height=3)
-        self.cbar_tree.heading("v", text="刻度值")
-        self.cbar_tree.heading("l", text="标签")
-        self.cbar_tree.column("v", width=80, anchor="center")
-        self.cbar_tree.column("l", width=130, anchor="center")
-        self.cbar_tree.pack(fill="x")
-        cbar_edit = ttk.Frame(cbar_lf)
-        cbar_edit.pack(fill="x", pady=(4, 0))
-        self.cbar_value_var = tk.StringVar()
-        self.cbar_label_var = tk.StringVar()
-        ttk.Entry(cbar_edit, textvariable=self.cbar_value_var, width=9).pack(
-            side="left", padx=(0, 3))
-        ttk.Entry(cbar_edit, textvariable=self.cbar_label_var, width=16).pack(
-            side="left")
-        cbar_btns = ttk.Frame(cbar_lf)
-        cbar_btns.pack(fill="x", pady=(4, 0))
-        ttk.Button(cbar_btns, text="添加", width=5,
-                   command=self._cbar_add).pack(side="left", padx=(0, 3))
-        ttk.Button(cbar_btns, text="更新选中", width=7,
-                   command=self._cbar_update).pack(side="left", padx=(0, 3))
-        ttk.Button(cbar_btns, text="删除选中", width=7,
-                   command=self._cbar_delete).pack(side="left", padx=(0, 3))
-        ttk.Button(cbar_btns, text="恢复默认", width=8,
-                   command=self._cbar_reset).pack(side="left")
-        self.cbar_controls = (cbar_lf,)
-
-        # ---- 自定义颜色 ----
-        color_lf = ttk.LabelFrame(left, text="自定义颜色（仅自定义模式）", padding=4)
-        color_lf.grid(row=r + 2, column=0, columnspan=4, sticky="we", pady=(4, 2))
+        for key, label in (("cmap", "颜色映射名称 / 自定义"), ("vmin", "最小值 vmin"),
+                           ("vcenter", "中心值 vcenter（留空为线性）"), ("vmax", "最大值 vmax")):
+            field(colors, key, label)
+        self.auto_range_button = ttk.Button(colors, text="自动范围（按当前数据）", command=self._auto_range)
+        self.auto_range_button.pack(fill="x", pady=5)
+        self.custom_controls.append(self.auto_range_button)
+        color_lf = self.color_frame = ttk.LabelFrame(colors, text="自定义颜色", padding=4)
+        color_lf.pack(fill="x", pady=6)
         self.color_buttons = []
         self._build_color_row(color_lf)
-        cbtns = ttk.Frame(color_lf)
-        cbtns.pack(fill="x", pady=(4, 0))
-        ttk.Button(cbtns, text="添加颜色", width=9,
-                   command=self._add_color).pack(side="left", padx=(0, 4))
-        ttk.Button(cbtns, text="移除最后", width=9,
-                   command=self._remove_color).pack(side="left", padx=(0, 4))
-        ttk.Button(cbtns, text="默认蓝白红", width=10,
-                   command=self._reset_colors).pack(side="left")
-        self.color_frame = color_lf
+        color_actions = ttk.Frame(color_lf)
+        color_actions.pack(fill="x", pady=4)
+        for label, command in (("添加", self._add_color), ("移除最后", self._remove_color),
+                               ("默认", self._reset_colors)):
+            button = ttk.Button(color_actions, text=label, width=7, command=command)
+            button.pack(side="left", padx=2)
+            self.custom_controls.append(button)
+        self.show_cbar_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(colors, text="显示颜色条", variable=self.show_cbar_var,
+                        command=self._refresh_preview).pack(anchor="w", pady=4)
+        field(colors, "cbar_orientation", "颜色条方向", ["vertical", "horizontal"])
+        field(colors, "cbar_label", "颜色条标题 / 单位")
+        self.show_cbar_labels_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(colors, text="显示刻度标签（隐藏后可恢复）", variable=self.show_cbar_labels_var,
+                        command=self._refresh_preview).pack(anchor="w", pady=4)
+        cbar_lf = ttk.LabelFrame(colors, text="颜色条刻度与标签", padding=4)
+        cbar_lf.pack(fill="x", pady=6)
+        tree_row = ttk.Frame(cbar_lf)
+        tree_row.pack(fill="x")
+        self.cbar_tree = ttk.Treeview(tree_row, columns=("v", "l"), show="headings", height=4,
+                                     selectmode="browse")
+        self.cbar_tree.heading("v", text="刻度值")
+        self.cbar_tree.heading("l", text="标签")
+        self.cbar_tree.column("v", width=75, minwidth=40)
+        self.cbar_tree.column("l", width=125, minwidth=60)
+        self.cbar_tree.pack(side="left", fill="both", expand=True)
+        ttk.Scrollbar(tree_row, orient="vertical", command=self.cbar_tree.yview).pack(side="right", fill="y")
+        self.cbar_tree.configure(yscrollcommand=tree_row.winfo_children()[-1].set)
+        self.cbar_tree.bind("<<TreeviewSelect>>", self._cbar_select)
+        self.cbar_value_var, self.cbar_label_var = tk.StringVar(), tk.StringVar()
+        for label, var in (("刻度值", self.cbar_value_var), ("标签文本", self.cbar_label_var)):
+            ttk.Label(cbar_lf, text=label).pack(anchor="w")
+            ttk.Entry(cbar_lf, textvariable=var).pack(fill="x", pady=2)
+        cbar_btns = ttk.Frame(cbar_lf)
+        cbar_btns.pack(fill="x", pady=4)
+        for index, (label, command) in enumerate((("添加", self._cbar_add), ("更新选中", self._cbar_update),
+                                                ("删除选中", self._cbar_delete), ("恢复默认", self._cbar_reset))):
+            ttk.Button(cbar_btns, text=label, command=command).grid(row=index // 2, column=index % 2, sticky="ew")
+        cbar_btns.columnconfigure((0, 1), weight=1)
+        self.cbar_controls = (cbar_lf,)
 
-        # ---- 预设 ----
-        preset_lf = ttk.LabelFrame(left, text="预设（保存整套设置）", padding=4)
-        preset_lf.grid(row=r + 3, column=0, columnspan=4, sticky="we", pady=(6, 2))
-        self.preset_name_var = tk.StringVar()
-        ttk.Entry(preset_lf, textvariable=self.preset_name_var, width=22).pack(
-            fill="x", pady=(0, 4))
-        self.preset_combo = ttk.Combobox(preset_lf, state="readonly", width=22)
-        self.preset_combo.pack(fill="x", pady=(0, 4))
-        pbtns = ttk.Frame(preset_lf)
-        pbtns.pack(fill="x")
-        ttk.Button(pbtns, text="保存预设", width=8, command=self._preset_save).pack(
-            side="left", padx=(0, 3))
-        ttk.Button(pbtns, text="加载", width=6, command=self._preset_load).pack(
-            side="left", padx=(0, 3))
-        ttk.Button(pbtns, text="删除", width=6, command=self._preset_delete).pack(
-            side="left", padx=(0, 3))
-        ttk.Button(pbtns, text="刷新", width=6, command=self._preset_refresh).pack(
-            side="left")
-
-        # ---- 输出 ----
-        out_row = r + 4
-        ttk.Label(left, text="输出格式").grid(row=out_row, column=0, sticky="w", pady=(10, 0))
+        for key, label, choices in (("dpi", "输出分辨率 dpi", list(DPI_CHOICES)),
+                                   ("figsize", "画幅尺寸（宽 x 高，英寸）", None)):
+            field(export, key, label, choices)
+        ttk.Label(export, text="输出格式").pack(anchor="w", pady=(8, 2))
         self.fmt_var = tk.StringVar(value="svg")
-        fmt_combo = ttk.Combobox(left, textvariable=self.fmt_var, state="readonly",
-                                 values=FORMATS, width=6)
-        fmt_combo.grid(row=out_row, column=1, sticky="w", pady=(10, 0))
-
-        ttk.Label(left, text="输出目录").grid(row=out_row + 1, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(export, textvariable=self.fmt_var, values=FORMATS, state="readonly").pack(fill="x")
+        ttk.Label(export, text="输出目录").pack(anchor="w", pady=(8, 2))
         self.out_var = tk.StringVar(value=self.out_dir)
-        out_entry = ttk.Entry(left, textvariable=self.out_var, width=16)
-        out_entry.grid(row=out_row + 1, column=1, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Button(left, text="浏览", width=5,
-                   command=self._choose_out_dir).grid(row=out_row + 1, column=3, pady=(6, 0))
+        ttk.Entry(export, textvariable=self.out_var).pack(fill="x")
+        ttk.Button(export, text="选择输出目录", command=self._choose_out_dir).pack(fill="x", pady=4)
+        ttk.Label(export, text="导出会自动命名，不覆盖已有文件。", wraplength=280).pack(anchor="w", pady=4)
+        preset_lf = ttk.LabelFrame(export, text="预设（设置与数据）", padding=6)
+        preset_lf.pack(fill="x", pady=10)
+        self.preset_name_var = tk.StringVar()
+        ttk.Label(preset_lf, text="预设名称").pack(anchor="w")
+        ttk.Entry(preset_lf, textvariable=self.preset_name_var).pack(fill="x", pady=4)
+        self.preset_combo = ttk.Combobox(preset_lf, state="readonly")
+        self.preset_combo.pack(fill="x", pady=4)
+        for label, command in (("保存预设", self._preset_save), ("加载预设", self._preset_load),
+                               ("删除预设", self._preset_delete), ("刷新列表", self._preset_refresh)):
+            ttk.Button(preset_lf, text=label, command=command).pack(fill="x", pady=2)
 
-        ttk.Button(left, text="生成图片", command=self.generate).grid(
-            row=out_row + 2, column=0, columnspan=4, sticky="we", pady=(12, 4))
-        ttk.Button(left, text="打开输出目录", command=self._open_out_dir).grid(
-            row=out_row + 3, column=0, columnspan=4, sticky="we", pady=4)
-
-        self.hint_label = ttk.Label(left, text="", foreground="#888888",
-                                    wraplength=280, justify="left")
-        self.hint_label.grid(row=out_row + 4, column=0, columnspan=4, sticky="w", pady=(10, 0))
-
-        # ================= 右侧：预览 + 数据 =================
-        right = ttk.Frame(main)
-        self._right = right
-        right.rowconfigure(1, weight=1)
-        right.columnconfigure(0, weight=1)
-
-        # 预览区
-        prev_lf = ttk.LabelFrame(right, text="实时预览（输出图片的预览）", padding=4)
-        prev_lf.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
-        prev_lf.rowconfigure(0, weight=1)
-        prev_lf.columnconfigure(0, weight=1)
-        self.preview = PreviewCanvas(prev_lf, on_click=self._on_preview_click)
-        self.preview.grid(row=0, column=0, sticky="nsew")
-
-        ptool = ttk.Frame(prev_lf)
-        ptool.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        # 预览获得剩余空间，数据区高度可直接拖动调整。
+        right = self._right = tk.PanedWindow(main, orient="vertical", sashwidth=8,
+                                            sashrelief="raised", borderwidth=0, opaqueresize=True)
+        prev_lf = ttk.LabelFrame(right, text="实时预览 · 拖动下方分隔条调整数据区", padding=4)
+        self.preview = PreviewCanvas(prev_lf)
+        self.preview.on_click = self._on_preview_click
+        self.preview.pack(fill="both", expand=True)
         self.mark_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(ptool, text="图形化标注模式（点击预览中的元素格进行标注）",
-                        variable=self.mark_mode_var).pack(side="left")
-        ttk.Label(ptool, text="  切换按钮：开启后点击预览图即可标注数据，与表格输入实时同步",
-                  foreground="#666666").pack(side="left")
-
-        # 数据区（两种输入方式切换）
-        data_nb = ttk.Notebook(right)
-        data_nb.grid(row=1, column=0, sticky="nsew")
-        data_nb.rowconfigure(0, weight=1)
-        data_nb.columnconfigure(0, weight=1)
-
-        # Tab1：表格
-        tab_table = ttk.Frame(data_nb, padding=6)
-        data_nb.add(tab_table, text="① 表格编辑")
-        tab_table.rowconfigure(0, weight=1)
-        tab_table.columnconfigure(0, weight=1)
+        ttk.Checkbutton(prev_lf, text="图形化标注：点击元素格编辑", variable=self.mark_mode_var).pack(anchor="w")
+        data_nb = self.data_notebook = ttk.Notebook(right)
+        right.add(prev_lf, minsize=252, height=440, stretch="always")
+        right.add(data_nb, minsize=120, height=180, stretch="never")
+        right.bind("<ButtonRelease-1>", self._remember_preview_ratio)
+        right.bind("<Map>", lambda e: self._schedule_ratio())
+        tab_table = ttk.Frame(data_nb, padding=4)
+        data_nb.add(tab_table, text="数据表 · 双击数值编辑")
+        ttk.Button(tab_table, text="清空数据", command=self._clear_data).pack(side="bottom", anchor="e")
         self.table = DataTable(tab_table, on_change=self._table_changed)
-        self.table.grid(row=0, column=0, sticky="nsew")
-        tbtns = ttk.Frame(tab_table)
-        tbtns.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        ttk.Button(tbtns, text="载入示例数据", command=self._load_demo).pack(side="left", padx=(0, 6))
-        ttk.Button(tbtns, text="导入数据文件", command=self._import_file).pack(side="left", padx=(0, 6))
-        ttk.Button(tbtns, text="清空数据", command=self._clear_data).pack(side="left")
-
-        # Tab2：图形化标注
-        tab_mark = ttk.Frame(data_nb, padding=8)
-        data_nb.add(tab_mark, text="② 图形化标注")
-        tab_mark.columnconfigure(1, weight=1)
-        ttk.Label(tab_mark, text="使用方法：\n1. 勾选上方「图形化标注模式」；\n"
-                                 "2. 在预览图中点击某个元素格子；\n"
-                                 "3. 在下方输入数值（热力图模式）或文本标注（标注模式），点「应用」。\n"
-                                 "4. 再次点击同一元素可修改；输入框留空点「应用」则清除该元素。",
-                  justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.mark_symbol_var = tk.StringVar(value="（点击预览中的元素格）")
-        ttk.Label(tab_mark, text="当前元素：", font=("", 10, "bold")).grid(row=1, column=0, sticky="w")
-        ttk.Label(tab_mark, textvariable=self.mark_symbol_var, foreground="#0b6bcb",
-                  font=("", 11, "bold")).grid(row=1, column=1, sticky="w")
-        ttk.Label(tab_mark, text="数值 / 标注：").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.table.tree.configure(height=5)
+        self.table.pack(fill="both", expand=True)
+        self.mark_tab = ttk.Frame(data_nb, padding=6)
+        data_nb.add(self.mark_tab, text="图形化标注")
+        self.mark_tab.columnconfigure(1, weight=1)
+        self.mark_symbol_var = tk.StringVar(value="（点击预览元素）")
         self.mark_value_var = tk.StringVar()
-        mark_entry = ttk.Entry(tab_mark, textvariable=self.mark_value_var, width=24)
-        mark_entry.grid(row=2, column=1, sticky="we", pady=(8, 0))
-        mark_entry.bind("<Return>", lambda e: self._apply_mark())
-        mbtns = ttk.Frame(tab_mark)
-        mbtns.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        ttk.Button(mbtns, text="应用标注", command=self._apply_mark).pack(side="left", padx=(0, 6))
-        ttk.Button(mbtns, text="清除该元素", command=self._clear_mark).pack(side="left")
-
-        # ================= 状态栏 =================
-        status = ttk.Frame(main)
-        self._status = status
-        status.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(status, textvariable=self.status_var, foreground="#333333").pack(side="left")
-
-        # 应用初始布局（读自用户配置）
+        ttk.Label(self.mark_tab, text="当前元素").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.mark_tab, textvariable=self.mark_symbol_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(self.mark_tab, text="数值 / 标注").grid(row=1, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(self.mark_tab, textvariable=self.mark_value_var)
+        entry.grid(row=1, column=1, sticky="ew", pady=4)
+        entry.bind("<Return>", lambda e: self._apply_mark())
+        buttons = ttk.Frame(self.mark_tab)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Button(buttons, text="应用标注", command=self._apply_mark).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="清除该元素", command=self._clear_mark).pack(side="left")
         self._apply_layout()
-        self._apply_preview_ratio()
         self._apply_scale()
+        self._schedule_ratio()
+
+    def _schedule_ratio(self):
+        if self._ratio_job is not None:
+            self.after_cancel(self._ratio_job)
+        self._ratio_job = self.after_idle(self._initial_ratio)
+
+    def _initial_ratio(self):
+        self._ratio_job = None
+        self._apply_preview_ratio()
 
     # ------------------------------------------------------------------
     def _build_color_row(self, parent):
         """重建自定义颜色色块按钮行。"""
-        for b in self.color_buttons:
-            b.destroy()
+        if hasattr(self, "_color_row"):
+            self._color_row.destroy()
         self.color_buttons = []
-        row = ttk.Frame(parent)
-        row.pack(fill="x")
+        row = self._color_row = ttk.Frame(parent)
+        siblings = parent.winfo_children()
+        if len(siblings) > 1:
+            row.pack(fill="x", before=siblings[0])
+        else:
+            row.pack(fill="x")
         for i, rgb in enumerate(self.custom_colors):
             btn = tk.Button(row, width=4, bg=_rgb_to_hex(rgb),
                             command=lambda idx=i: self._edit_color(idx))
-            btn.pack(side="left", padx=1)
+            btn.grid(row=i // 5, column=i % 5, padx=2, pady=2)
             self.color_buttons.append(btn)
 
     # ------------------------------------------------------------------
@@ -790,7 +689,17 @@ class App(tk.Tk):
             # 非自定义模式返回的是 STYLES 原对象，浅拷贝避免污染全局
             if not style.get("customizable"):
                 work = dict(work)
-            work["cbar"] = self.cbar_override
+            work["cbar"] = {**self.cbar_override,
+                            "ticks": list(self.cbar_override["ticks"]),
+                            "labels": list(self.cbar_override["labels"])}
+        # 隐藏标签只作用于本次渲染，不销毁用户输入和默认刻度。
+        if not self.show_cbar_labels_var.get():
+            work = dict(work)
+            cfg = work.get("cbar")
+            if cfg:
+                work["cbar"] = {**cfg, "labels": [""] * len(cfg["ticks"])}
+            else:
+                work["cbar"] = {"ticks": [], "labels": [], "fontsize": 8}
         return work
 
     def _on_style_change(self):
@@ -818,14 +727,25 @@ class App(tk.Tk):
         self.param_vars["dpi"].set("100")
         self.param_vars["figsize"].set("10x5")
         self.param_vars["title"].set("")
+        for key, default in (("symbol_fs", 9), ("number_fs", 6), ("value_fs", 6),
+                             ("cbar_orientation", "vertical"), ("cbar_label", "")):
+            self.param_vars[key].set(str(style.get(key, default)))
+        for key, var in self.bool_vars.items():
+            var.set(style.get(key, key != "transparent"))
+        if style_id == "custom":
+            self.param_vars["vmin"].set("-1")
+            self.param_vars["vcenter"].set("0")
+            self.param_vars["vmax"].set("1")
 
         editable = style.get("customizable", False)
         for key in self.param_entries:
             w = self.param_entries[key]
             if editable:
-                w.config(state="normal" if isinstance(w, ttk.Entry) else "readonly")
+                w.config(state="readonly" if isinstance(w, ttk.Combobox) and key != "font" else "normal")
             else:
                 w.config(state="disabled")
+        for control in self.custom_controls:
+            control.configure(state="normal" if editable else "disabled")
         # 自定义颜色仅自定义模式可用
         for b in self.color_buttons:
             b.config(state="normal" if editable else "disabled")
@@ -846,7 +766,9 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _table_changed(self):
         """表格编辑后：同步统一数据源并刷新预览。"""
-        self.data = self.table.get_data()
+        # 旧预设中的未知符号不能因编辑其他元素而被静默删除。
+        unknown = {s: v for s, v in self.data.items() if s not in SYMBOLS}
+        self.data = {**unknown, **self.table.get_data()}
         self._refresh_preview()
 
     def _clear_data(self):
@@ -868,21 +790,103 @@ class App(tk.Tk):
     def _import_file(self):
         path = filedialog.askopenfilename(
             title="选择数据文件",
-            filetypes=[("数据文件", "*.txt *.csv *.json"), ("所有文件", "*.*")])
+            filetypes=[("数据文件", "*.txt *.csv *.tsv *.json"), ("所有文件", "*.*")])
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8-sig") as fh:
                 text = fh.read()
-            data = parse_data(text)
-            if not data:
-                raise ValueError("文件中没有可解析的数据")
-            self.data = data
-            self.table.set_data(data)
-            self.status_var.set(f"已从 {os.path.basename(path)} 导入 {len(data)} 条数据")
-            self._refresh_preview()
+            self._import_text(text, os.path.basename(path))
         except Exception as exc:
             messagebox.showerror("导入失败", str(exc))
+
+    def _import_text(self, text, source="粘贴数据"):
+        """文件与粘贴的共同入口；解析失败时保持原数据不变。"""
+        data = parse_data(text)
+        if not data:
+            raise ValueError("没有可解析的数据")
+        unknown = [s for s in data if s not in SYMBOLS]
+        if unknown:
+            raise ValueError("未知元素：" + ", ".join(unknown) + "；请修正后再导入")
+        self.data = data
+        self.table.set_data(data)
+        self.status_var.set(f"已从 {source} 导入 {len(data)} 条数据")
+        self._refresh_preview()
+        return data
+
+    def _paste_data(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("粘贴数据")
+        dialog.geometry("560x400")
+        dialog.minsize(360, 260)
+        dialog.transient(self)
+        ttk.Label(dialog, text="粘贴 CSV、JSON、Python 字典或“元素 数值”文本；导入将替换当前数据。",
+                  wraplength=500, padding=8).pack(fill="x")
+        text = tk.Text(dialog, wrap="word", undo=True, height=10)
+        text.pack(fill="both", expand=True, padx=8)
+        error = tk.StringVar()
+        ttk.Label(dialog, textvariable=error, foreground="#b42318", wraplength=500).pack(fill="x", padx=8)
+        def apply():
+            try:
+                self._import_text(text.get("1.0", "end"))
+            except (ValueError, TypeError) as exc:
+                error.set(str(exc))
+                return
+            dialog.destroy()
+        buttons = ttk.Frame(dialog, padding=8)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="导入数据", command=apply).pack(side="right")
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=6)
+        try:
+            text.insert("1.0", self.clipboard_get())
+        except tk.TclError:
+            pass
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        text.focus_set()
+        dialog.grab_set()
+        return dialog
+
+    def _commit_table_edit(self):
+        if self.table._edit_entry is not None:
+            self.table._commit_edit(self.table._edit_item, self.table._edit_entry)
+
+    def _validated_data(self, kind):
+        if kind == "labels":
+            unknown = [s for s in self.data if s not in known_symbols()]
+            if unknown:
+                raise ValueError(f"未知元素：{', '.join(map(str, unknown))}；请修正后再导出")
+            return dict(self.data)
+        data, unknown, bad = validate_data(self.data)
+        bad += [(s, v) for s, v in data.items() if isinstance(v, str)]
+        if unknown or bad:
+            details = []
+            if unknown:
+                details.append("未知元素：" + ", ".join(map(str, unknown)))
+            if bad:
+                details.append("非有效数字：" + ", ".join(f"{s}={v}" for s, v in bad))
+            raise ValueError("；".join(details) + "。请修正数据或使用标注图")
+        return data
+
+    def _auto_range(self):
+        self._commit_table_edit()
+        try:
+            data = self._validated_data("heatmap")
+            if not data:
+                raise ValueError("请先输入数值数据")
+            low, high = min(data.values()), max(data.values())
+            if low == high:
+                padding = max(abs(low) * .05, .5)
+                low, high = low - padding, high + padding
+            center = 0.0 if low < 0 < high else low / 2 + high / 2
+            self.param_vars["vmin"].set(format(low, ".17g"))
+            self.param_vars["vcenter"].set(format(center, ".17g") if low < center < high else "")
+            self.param_vars["vmax"].set(format(high, ".17g"))
+            self.status_var.set(f"已按 {len(data)} 个数值设置范围：{low:g} ～ {high:g}")
+            self._refresh_preview()
+            return True
+        except ValueError as exc:
+            self.status_var.set(f"自动范围失败：{exc}")
+            return False
 
     # ------------------------------------------------------------------
     # 图形化标注
@@ -898,8 +902,7 @@ class App(tk.Tk):
         self._mark_tab_select()
 
     def _mark_tab_select(self):
-        for child in self.winfo_children():
-            pass  # 简化：不强制切换 Tab，提示已足够
+        self.data_notebook.select(self.mark_tab)
 
     def _apply_mark(self):
         sym = self.mark_symbol_var.get()
@@ -929,24 +932,27 @@ class App(tk.Tk):
     # 自定义颜色
     # ------------------------------------------------------------------
     def _edit_color(self, idx):
-        _, rgb = colorchooser.askcolor(color=_rgb_to_hex(self.custom_colors[idx]),
+        rgb, _ = colorchooser.askcolor(color=_rgb_to_hex(self.custom_colors[idx]),
                                        title=f"选择第 {idx + 1} 个颜色")
         if rgb:
             self.custom_colors[idx] = tuple(c / 255 for c in rgb)
             self._build_color_row(self.color_frame)
+            self.param_vars["cmap"].set("自定义")
             self._refresh_preview()
 
     def _add_color(self):
-        _, rgb = colorchooser.askcolor(color="#888888", title="添加一个颜色")
+        rgb, _ = colorchooser.askcolor(color="#888888", title="添加一个颜色")
         if rgb:
             self.custom_colors.append(tuple(c / 255 for c in rgb))
             self._build_color_row(self.color_frame)
+            self.param_vars["cmap"].set("自定义")
             self._refresh_preview()
 
     def _remove_color(self):
         if len(self.custom_colors) > 2:
             self.custom_colors.pop()
             self._build_color_row(self.color_frame)
+            self.param_vars["cmap"].set("自定义")
             self._refresh_preview()
         else:
             messagebox.showinfo("提示", "至少保留 2 个颜色。")
@@ -954,6 +960,7 @@ class App(tk.Tk):
     def _reset_colors(self):
         self.custom_colors = list(DEFAULT_COLORS)
         self._build_color_row(self.color_frame)
+        self.param_vars["cmap"].set("自定义")
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -962,13 +969,18 @@ class App(tk.Tk):
     def _cbar_current_entries(self):
         """当前生效的标注列表（覆盖值优先，否则样式自带，否则空）。"""
         if self.cbar_override is not None:
-            return self.cbar_override["ticks"], self.cbar_override["labels"]
-        style = self._current_work_style()
-        cfg = style.get("cbar") if not style.get("customizable") else \
-            STYLES["custom"].get("cbar")
+            return list(self.cbar_override["ticks"]), list(self.cbar_override["labels"])
+        cfg = STYLES[self._current_style_id()].get("cbar")
         if cfg:
             return list(cfg["ticks"]), list(cfg["labels"])
         return [], []
+
+    def _cbar_select(self, event=None):
+        selection = self.cbar_tree.selection()
+        if selection:
+            value, label = self.cbar_tree.item(selection[0], "values")
+            self.cbar_value_var.set(value)
+            self.cbar_label_var.set(label)
 
     def _cbar_refresh_tree(self):
         """把当前标注刷新到 Treeview 显示。"""
@@ -1050,11 +1062,12 @@ class App(tk.Tk):
 
     def _current_preset_payload(self) -> dict:
         return {
+            "output_format": self.fmt_var.get(),
+            "output_dir": self.out_var.get(),
             "mode_id": self._current_style_id(),
-            "params": {k: self.param_vars[k].get() for k in
-                       ("cmap", "vmin", "vcenter", "vmax", "fmt",
-                        "layout", "kind", "font", "edge", "empty",
-                        "dpi", "figsize", "title")},
+            "params": {k: var.get() for k, var in self.param_vars.items()},
+            "display": {k: var.get() for k, var in self.bool_vars.items()},
+            "show_cbar_labels": self.show_cbar_labels_var.get(),
             "show_cbar": self.show_cbar_var.get(),
             "cbar_override": self.cbar_override,
             "custom_colors": self.custom_colors,
@@ -1068,7 +1081,7 @@ class App(tk.Tk):
             return
         try:
             path = self.presets.save(name, self._current_preset_payload())
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             messagebox.showerror("保存失败", str(exc))
             return
         self.status_var.set(f"已保存预设 {name} → {path}")
@@ -1101,12 +1114,23 @@ class App(tk.Tk):
             if mode_id in ids:
                 self.mode_combo.current(ids.index(mode_id))
                 self._on_style_change()
+            output_format = payload.get("output_format")
+            if isinstance(output_format, str) and output_format in FORMATS:
+                self.fmt_var.set(output_format)
+            output_dir = payload.get("output_dir")
+            if isinstance(output_dir, str) and output_dir.strip():
+                self.out_var.set(output_dir)
             params = payload.get("params", {})
             if isinstance(params, dict):
                 for k, v in params.items():
                     if k in self.param_vars:
                         self.param_vars[k].set(str(v))
+            display = payload.get("display", {})
+            if isinstance(display, dict):
+                for key, var in self.bool_vars.items():
+                    var.set(display.get(key, key != "transparent") is True)
             self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
+            self.show_cbar_labels_var.set(payload.get("show_cbar_labels", True) is True)
             raw_cbar = payload.get("cbar_override")
             if (isinstance(raw_cbar, dict)
                     and isinstance(raw_cbar.get("ticks"), list)
@@ -1144,7 +1168,11 @@ class App(tk.Tk):
             messagebox.showwarning("提示", "请选择要删除的预设名。")
             return
         if messagebox.askyesno("删除预设", f"确定删除预设「{name}」吗？"):
-            self.presets.delete(name)
+            try:
+                self.presets.delete(name)
+            except (ValueError, OSError) as exc:
+                messagebox.showerror("删除失败", str(exc))
+                return
             self.status_var.set(f"已删除预设 {name}")
             self._preset_refresh()
 
@@ -1169,43 +1197,68 @@ class App(tk.Tk):
         return hit
 
     def _preview_data(self) -> dict:
-        """与 generate() 使用相同的数据校验逻辑（保证预览与输出一致）。"""
-        work = self._current_work_style()
-        if work.get("kind") == "labels":
-            return {s: v for s, v in self.data.items() if s in known_symbols()}
-        data, _, _ = validate_data(self.data)
-        return {s: v for s, v in data.items() if not isinstance(v, str)}
+        return self._validated_data(self._current_work_style().get("kind"))
 
-    def _refresh_preview(self):
+    def _cancel_refresh(self):
+        if self._refresh_job is not None:
+            self.after_cancel(self._refresh_job)
+            self._refresh_job = None
+
+    def _refresh_preview(self, *args):
+        """合并连续输入；同步调用方使用 _refresh_preview_now。"""
+        self._cancel_refresh()
+        self._refresh_job = self.after(220, self._refresh_preview_now)
+
+    def _refresh_preview_now(self):
+        """同步验证并更新预览，成功返回 True，失败保留旧图并明确标记。"""
+        self._cancel_refresh()
         style_id = self._current_style_id()
-        if style_id == "cmap_preview":
-            # 本模式无周期表预览：显示占位说明，避免残留旧预览误导
-            import matplotlib.pyplot as plt
-            empty_fig = plt.figure(figsize=(8, 3))
-            ax = empty_fig.add_subplot(111)
-            ax.text(0.5, 0.5, "颜色映射预览模式：点击「生成图片」输出全部色图预览",
-                    ha="center", va="center", fontsize=12)
-            ax.axis("off")
-            self.preview.show(empty_fig, {})
-            return
         try:
+            if style_id == "cmap_preview":
+                # 本模式无周期表预览：显示占位说明，避免残留旧预览误导
+                import matplotlib.pyplot as plt
+                empty_fig = plt.figure(figsize=(8, 3))
+                ax = empty_fig.add_subplot(111)
+                ax.text(0.5, 0.5, "颜色映射预览模式：点击「生成图片」输出全部色图预览",
+                        ha="center", va="center", fontsize=12)
+                ax.axis("off")
+                self.preview.show(empty_fig, {})
+                self._preview_error = None
+                self.preview.set_stale(False)
+                return True
             style = self._current_work_style()
             title = (self.param_vars["title"].get().strip()
                      if style.get("customizable") else "")
             fig = render_table(style, self._preview_data(), title=title or None,
                                show_cbar=self.show_cbar_var.get(),
                                figsize=style.get("figsize", (10, 5)))
-            self.preview.show(fig, self._build_hit_map())
+            try:
+                self.preview.show(fig, self._build_hit_map())
+            except Exception:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
+                raise
+            if self._preview_error is not None:
+                self.status_var.set("预览已更新")
+            self._preview_error = None
+            self.preview.set_stale(False)
+            return True
         except Exception as exc:
-            self.status_var.set(f"预览失败：{exc}")
+            self._preview_error = str(exc)
+            self.preview.set_stale(True)
+            self.status_var.set(f"预览失败（保留旧预览）：{exc}")
+            return False
 
     # ------------------------------------------------------------------
     # 生成
     # ------------------------------------------------------------------
     def generate(self):
+        self._commit_table_edit()
+        self._cancel_refresh()
         style_id = self._current_style_id()
         style = STYLES[style_id]
         out_dir = self.out_var.get().strip() or self.out_dir
+        fig = None
 
         try:
             if style_id == "cmap_preview":
@@ -1213,49 +1266,37 @@ class App(tk.Tk):
                 return
 
             if not self.data:
+                self._refresh_preview_now()
                 messagebox.showwarning("提示", "请先输入数据：表格编辑、图形化标注、导入文件或载入示例。")
                 return
 
+            # 导出前同步刷新：提交后的当前数据必须与看到的图完全一致。
+            if not self._refresh_preview_now():
+                raise ValueError(self._preview_error)
             work_style = self._current_work_style()
-            if work_style.get("kind") == "labels":
-                data = {s: v for s, v in self.data.items() if s in known_symbols()}
-                unknown = [s for s in self.data if s not in known_symbols()]
-                if unknown:
-                    messagebox.showwarning("未知元素", f"以下符号不在周期表中，将被忽略：{', '.join(unknown)}")
-            else:
-                data, unknown, bad = validate_data(self.data)
-                if unknown:
-                    messagebox.showwarning("未知元素", f"以下符号不在周期表中，将被忽略：{', '.join(unknown)}")
-                bad = bad + [(s, v) for s, v in data.items() if isinstance(v, str)]
-                data = {s: v for s, v in data.items() if not isinstance(v, str)}
-                if bad:
-                    messagebox.showwarning("非法值", f"以下数据不是有效数字，将被忽略：{bad}")
-
             fmt = self.fmt_var.get()
-            title = (self.param_vars["title"].get().strip()
-                     if style.get("customizable") else "")
-            fig = render_table(work_style, data, title=title or None,
-                               show_cbar=self.show_cbar_var.get(),
-                               figsize=work_style.get("figsize", (10, 5)))
+            fig = self.preview.fig
             path = save_figure(
                 fig, out_dir, "periodic_table", fmt,
                 bbox_inches="tight" if work_style.get("bbox_tight", True) else None,
-                dpi=work_style.get("dpi", 100))
-            import matplotlib.pyplot as plt
-            plt.close(fig)
-
+                dpi=work_style.get("dpi", 100),
+                transparent=work_style.get("transparent", False))
             self.last_output = path
             self.status_var.set(f"已生成：{path}")
-            if messagebox.askyesno("完成", f"图片已保存到：\n{path}\n\n是否打开查看？"):
-                webbrowser.open(path)
+
         except Exception as exc:
+            self.status_var.set(f"导出失败：{exc}")
             messagebox.showerror("生成失败", str(exc))
+        finally:
+            if fig is not None:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
 
     def _generate_cmap_preview(self, out_dir):
         paths = render_cmap_preview(out_dir)
         self.last_output = out_dir
         self.status_var.set(f"已生成 {len(paths)} 张颜色映射预览图 → {out_dir}")
-        messagebox.showinfo("完成", f"已生成 {len(paths)} 张预览图：\n{out_dir}")
+
 
     def _apply_custom_params(self, style):
         import copy
@@ -1295,23 +1336,33 @@ class App(tk.Tk):
                                             "classic")
         work["kind"] = KIND_CHOICES.get(self.param_vars["kind"].get(),
                                         "heatmap")
-        work["font"] = FONT_CHOICES.get(self.param_vars["font"].get(), "Arial")
+        work["font"] = self.param_vars["font"].get().strip() or "Arial"
         edge = EDGE_CHOICES.get(self.param_vars["edge"].get(), "none")
         work["edge"] = None if edge == "none" else (0.5, "black")
         work["empty"] = EMPTY_CHOICES.get(self.param_vars["empty"].get(),
                                           "#f0f0f0")
         work["dpi"] = DPI_CHOICES.get(self.param_vars["dpi"].get(), 100)
-        # 图尺寸 "宽x高"（英寸），解析失败/非有限值保持默认；上限 40 英寸防资源滥用
-        fs = self.param_vars["figsize"].get().strip().lower()
+        fs = self.param_vars["figsize"].get().strip().lower().replace("×", "x")
         try:
-            if "x" in fs:
-                w, h = fs.split("x", 1)
-                fw, fh = float(w), float(h)
-                if math.isfinite(fw) and math.isfinite(fh):
-                    work["figsize"] = (min(max(fw, 2.0), 40.0),
-                                       min(max(fh, 1.0), 40.0))
-        except (ValueError, TypeError):
-            pass
+            fw, fh = (float(value.strip()) for value in fs.split("x"))
+        except (ValueError, TypeError) as exc:
+            raise ValueError("画幅尺寸应为 宽x高（英寸），例如 10x5") from exc
+        if not (math.isfinite(fw) and math.isfinite(fh) and 2 <= fw <= 40 and 1 <= fh <= 40):
+            raise ValueError("画幅宽度须为 2～40 英寸，高度须为 1～40 英寸")
+        work["figsize"] = (fw, fh)
+        work["bbox_tight"] = False
+        for key, var in self.bool_vars.items():
+            work[key] = var.get()
+        for key in ("symbol_fs", "number_fs", "value_fs"):
+            try:
+                value = float(self.param_vars[key].get())
+            except ValueError as exc:
+                raise ValueError(f"{key} 必须是正数字号") from exc
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{key} 必须是有限正数")
+            work[key] = value
+        work["cbar_orientation"] = self.param_vars["cbar_orientation"].get()
+        work["cbar_label"] = self.param_vars["cbar_label"].get()
         # 标注图类型：注入 labels 专属默认键（浅灰底 + 深灰标注）
         if work["kind"] == "labels":
             work.setdefault("bg", "#f0f0f0")
@@ -1346,10 +1397,29 @@ def main():
     _smoke_log("start")
     app = App()
     _smoke_log("app_created")
-    # PTT_SMOKE=1：构造成功即自动退出（隐藏窗口避免无交互桌面阻塞）
+    # 打包验收可指定独立目录，实际经过应用导入、预览及三种格式导出。
     if os.environ.get("PTT_SMOKE") == "1":
         app.withdraw()
-        app.after(1500, app.destroy)
+        def smoke():
+            try:
+                destination = os.environ.get("PTT_SMOKE_EXPORT_DIR")
+                if destination:
+                    def fail(title, detail, **kwargs):
+                        raise RuntimeError(f"{title}: {detail}")
+                    messagebox.showerror = fail
+                    app._import_text("H,0\nC,-1\nFe,1", "打包验收")
+                    app._refresh_preview_now()
+                    app.out_var.set(destination)
+                    for fmt in FORMATS:
+                        app.fmt_var.set(fmt)
+                        app.generate()
+                        _smoke_log("export:" + fmt)
+                _smoke_log("smoke:passed")
+            except Exception as exc:
+                _smoke_log("smoke:failed:" + repr(exc))
+            finally:
+                app.destroy()
+        app.after(1500, smoke)
     _smoke_log("before_mainloop")
     app.mainloop()
     _smoke_log("after_mainloop")

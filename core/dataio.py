@@ -11,7 +11,10 @@
 """
 from __future__ import annotations
 
+import csv
+from itertools import chain
 import json
+import math
 import re
 
 from .elements_data import ALL_SYMBOLS
@@ -30,58 +33,119 @@ def parse_data(text: str) -> dict:
     值保留原始文本形态：能被 float() 解析则转 float，否则保留字符串
     （标注类模式使用字符串值，如 '3c1'）。
     """
-    text = (text or "").strip()
+    text = (text or "").lstrip("\ufeff").strip()
     if not text:
         return {}
 
     # 1) 字典 / JSON 文本
     if text.startswith("{") and text.endswith("}"):
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(text, object_pairs_hook=_unique_pairs)
         except json.JSONDecodeError:
             # 尝试 Python 字面量（单引号、裸 True 等）
             try:
                 parsed = _safe_eval_dict(text)
-            except Exception:
-                raise ValueError("无法解析字典格式的数据，请检查格式")
+            except SyntaxError as exc:
+                raise ValueError("无法解析字典格式的数据，请检查格式") from exc
         result = {}
         for key, val in parsed.items():
-            result[str(key).strip()] = _coerce(val)
+            if val is not None and str(val).strip():
+                result[str(key).strip()] = _coerce(val)
         return result
 
-    # 2) 逐行格式：符号 分隔符 值
-    result = {}
-    line_pattern = re.compile(r"^\s*([A-Za-z]{1,2})\s*[=:，,\t\s]\s*(.+?)\s*$")
-    for lineno, line in enumerate(text.splitlines(), 1):
-        line = line.strip()
+    # 2) CSV / TSV (including Excel clipboard) and legacy separated lines.
+    pairs = []
+    first_row = True
+    line_pattern = re.compile(r"^\s*([A-Za-z]{1,2})\s*[=:，,\t\s]\s*(.*?)\s*$")
+    lines = enumerate(text.splitlines(keepends=True), 1)
+    for lineno, raw_line in lines:
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        m = line_pattern.match(line)
-        if not m:
-            raise ValueError(f"第 {lineno} 行无法解析: {line!r}")
-        sym, val = m.group(1), m.group(2)
-        result[sym] = _coerce(val)
+        # Preserve legacy annotations after '=' / ':' / '，'.
+        legacy = re.match(r"^[A-Za-z]{1,2}\s*[=:，]", line)
+        delimiter = None if legacy else _record_delimiter(line)
+        if delimiter:
+            try:
+                # Share the iterator so quoted fields can consume whole records,
+                # without filtering their embedded blank or comment-like lines.
+                record = chain([raw_line.lstrip()], (raw for _, raw in lines))
+                row = next(csv.reader(record, delimiter=delimiter, strict=True))
+            except csv.Error as exc:
+                raise ValueError(f"第 {lineno} 行 CSV/TSV 格式错误: {exc}") from exc
+            if len(row) != 2:
+                raise ValueError(f"第 {lineno} 行需要两列: {line!r}")
+            sym, val = (part.strip() for part in row)
+        else:
+            m = line_pattern.match(line)
+            if not m:
+                # A symbol alone also represents a blank spreadsheet value.
+                if re.fullmatch(r"[A-Za-z]{1,2}", line):
+                    sym, val = line, ""
+                else:
+                    raise ValueError(f"第 {lineno} 行无法解析: {line!r}")
+            else:
+                sym, val = m.groups()
+        if first_row and (sym.lower(), val.lower()) in {
+            ("element", "value"), ("元素", "数值")
+        }:
+            first_row = False
+            continue
+        first_row = False
+        if not sym and not val:
+            continue
+        if not re.fullmatch(r"[A-Za-z]{1,2}", sym):
+            raise ValueError(f"第 {lineno} 行元素符号无效: {sym!r}")
+        pairs.append((sym, val))
+    parsed = _unique_pairs(pairs)
+    return {sym: _coerce(val) for sym, val in parsed.items() if str(val).strip()}
+
+
+def _record_delimiter(line):
+    """Use the first column separator outside quotes, not tabs in a value."""
+    quoted = False
+    for char in line:
+        if char == '"':
+            quoted = not quoted
+        elif not quoted and char in (",", "\t"):
+            return char
+    return None
+
+
+def _unique_pairs(pairs):
+    """Reject duplicate normalized keys before dictionary construction loses them."""
+    result = {}
+    for key, value in pairs:
+        symbol = str(key).strip()
+        if symbol in result:
+            raise ValueError(f"重复元素: {symbol}")
+        result[symbol] = value
     return result
 
 
 def _coerce(val):
     """尽量转 float，失败则保留字符串。"""
     if isinstance(val, (int, float)):
-        return val
-    s = str(val).strip()
-    try:
-        return float(s)
-    except ValueError:
-        return s
+        result = val
+    else:
+        s = str(val).strip()
+        try:
+            result = float(s)
+        except ValueError:
+            return s
+    if not math.isfinite(result):
+        raise ValueError(f"数据必须是有限数值: {val!r}")
+    return result
 
 
 def _safe_eval_dict(text: str) -> dict:
     """安全解析 Python 字典字面量（只允许基本类型）。"""
     import ast
-    node = ast.literal_eval(text)
-    if not isinstance(node, dict):
+    node = ast.parse(text, mode="eval").body
+    if not isinstance(node, ast.Dict):
         raise ValueError("需要字典")
-    return node
+    return _unique_pairs((ast.literal_eval(key), ast.literal_eval(value))
+                         for key, value in zip(node.keys, node.values))
 
 
 def validate_data(data: dict) -> tuple:
@@ -99,13 +163,11 @@ def validate_data(data: dict) -> tuple:
         if isinstance(val, bool):
             bad.append((sym, val))
             continue
-        if isinstance(val, (int, float)):
-            valid[sym] = val
-        elif isinstance(val, str):
+        if isinstance(val, (int, float, str)):
             try:
-                valid[sym] = float(val)
-            except ValueError:
-                valid[sym] = val    # 标注类模式：保留字符串文本
+                valid[sym] = _coerce(val)
+            except (ValueError, OverflowError):
+                bad.append((sym, val))
         else:
             bad.append((sym, val))
     return valid, unknown, bad
@@ -113,6 +175,8 @@ def validate_data(data: dict) -> tuple:
 
 def demo_data(style_id: str) -> dict:
     """返回指定样式的示例数据（取自原脚本），便于快速体验。"""
+    if style_id == "custom":
+        return {"H": 0.0, "C": -0.5, "O": 0.5, "Fe": -1.0, "Cu": 1.0}
     if style_id == "reconstruct_percent":
         return {'Ag': 0.0101, 'Au': 0.0111, 'Pd': 0.0112, 'Pt': 0.0119, 'Cd': 0.0113, 'Co': 0.0104, 'Cr': 0.0121, 'Cu': 0.0110, 'Fe': 0.0115, 'Ir': 0.0135, 'Mn': 0.0118, 'Mo': 0.0095, 'Os': 0.0120, 'Re': 0.0123, 'Rh': 0.0115, 'Ru': 0.0109, 'Tc': 0.0110, 'Ti': 0.0109, 'W': 0.0114, 'Zn': 0.0103, 'Al': 0.0114, 'Mg': 0.0113, 'Zr': 0.0112, 'Ga': 0.0092, 'Ge': 0.0059, 'Nb': 0.0128, 'Ni': 0.0089, 'Sc': 0.0110, 'Ta': 0.0142, 'V': 0.0119, 'Y': 0.0107}
     if style_id == "reconstruct_2f_a":

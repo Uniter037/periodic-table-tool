@@ -23,3 +23,6 @@ presets/
 *.key
 *.pem
 credentials*
+
+# Isolated reproducible Windows exe build environment
+.venv-build-exe/

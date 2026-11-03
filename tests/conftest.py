@@ -13,10 +13,7 @@ import pytest
 @pytest.fixture(scope="session")
 def app():
     """整个测试会话共享一个 GUI 实例（连续创建多个 Tk 根窗口在 Windows 会失败）。"""
-    try:
-        import main
-    except Exception as exc:
-        pytest.skip(f"tkinter/matplotlib GUI 环境不可用: {exc}")
+    import main  # 业务导入失败必须使测试失败，不能伪装成环境跳过。
     instance = main.App()
     instance.withdraw()
     yield instance

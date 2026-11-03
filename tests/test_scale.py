@@ -66,7 +66,7 @@ def test_config_malformed_values(app, tmp_path, monkeypatch):
     app._load_config()          # 不应抛异常
     assert app.layout_mode == "auto"
     assert app.scale_mode == "auto"
-    assert app.preview_ratio == 0.5
+    assert app.preview_ratio == 0.72
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
@@ -87,21 +87,32 @@ def test_scale_auto(app, monkeypatch):
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_preview_ratio(app):
-    """预览区域比例：调整后右侧预览/数据区权重随之变化。"""
-    app.preview_ratio = 0.6
-    app._apply_preview_ratio()
-    assert app._right.rowconfigure(0, "weight") == 6
-    assert app._right.rowconfigure(1, "weight") == 4
-    app.preview_ratio = 0.4
-    app._apply_preview_ratio()
-    assert app._right.rowconfigure(0, "weight") == 4
-    assert app._right.rowconfigure(1, "weight") == 6
+    """Ratio menu moves a real sash; manual dragging preserves the figure size."""
+    app.geometry("1024x768")
+    app.deiconify()
+    app.update()
+    try:
+        app.preview_ratio = 0.6
+        app._apply_preview_ratio()
+        app.update_idletasks()
+        first = app._right.sash_coord(0)[1]
+        app.preview_ratio = 0.4
+        app._apply_preview_ratio()
+        app.update_idletasks()
+        second = app._right.sash_coord(0)[1]
+        assert second < first
+        assert app.preview.winfo_height() >= 160
+        app._remember_preview_ratio()
+        assert app.preview_ratio == pytest.approx(second / app._right.winfo_height())
+    finally:
+        app.preview_ratio = .72
+        app._apply_preview_ratio()
+        app.withdraw()
 
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_resize_preview_no_crash(app):
     """预览画布无内容时自适应不崩溃。"""
-    app.preview.canvas = None
     app._resize_preview()   # 不应抛异常
 
 

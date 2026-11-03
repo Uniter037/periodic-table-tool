@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """一致性验证脚本。
 
-对每种样式（除文件8 cmap 预览、文件6 原脚本有重复关键字 bug）：
+对 12 种样式（文件8 cmap 预览单独验证；文件6 的已知 bug 在内存中修补）：
 1. 在临时目录原样执行原始脚本（Agg 后端、show 无操作），取其渲染结果 PNG；
 2. 用 core.render_table 以相同数据 + 相同样式渲染 PNG；
 3. 逐像素对比两张 PNG，输出 PASS / FAIL 与差异统计。
@@ -31,7 +31,7 @@ from core.styles import STYLES, render_table
 # 注入 mendeleev 模拟模块：使用内置布局数据（与 mendeleev 1.2.0 同一来源），
 # 避免原脚本 exec 时 118 次数据库查询（约 28 秒/脚本）。
 import types
-import sys as _sys
+from unittest.mock import patch
 from core.elements_data import ELEM_LAYOUT, ALL_SYMBOLS
 
 
@@ -46,9 +46,8 @@ class _FakeElem:
 
 _fake_mendeleev = types.ModuleType("mendeleev")
 _fake_mendeleev.element = lambda num: _FakeElem(num, ALL_SYMBOLS[num - 1])
-_sys.modules["mendeleev"] = _fake_mendeleev
 
-ATTACH_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), ".reasonix", "attachments")
+ATTACH_DIR = os.path.join(PROJECT_ROOT, "tests", "fixtures", "originals")
 
 # 附件文件名 -> 样式 id
 FILE_STYLE = {
@@ -106,7 +105,7 @@ def fix_classic_ylorrd_bug(code: str) -> str:
     return code
 
 
-def run_original(code: str, workdir: str, style_id: str) -> str:
+def run_original(code: str, workdir: str, style_id: str) -> tuple:
     """在临时目录原样执行原脚本，返回其渲染结果的 PNG 路径。"""
     if style_id in ("classic_ylorrd_orig", "classic_ylorrd"):
         code = fix_classic_ylorrd_bug(code)
@@ -114,7 +113,8 @@ def run_original(code: str, workdir: str, style_id: str) -> str:
     cwd = os.getcwd()
     os.chdir(workdir)
     try:
-        exec(compile(code, "<original>", "exec"), ns)
+        with patch.dict(sys.modules, {"mendeleev": _fake_mendeleev}), patch.object(plt, "show"):
+            exec(compile(code, "<original>", "exec"), ns)
         fig = plt.gcf()
         png = os.path.join(workdir, "orig.png")
         bbox = STYLES[style_id].get("bbox_tight", True)
@@ -122,6 +122,7 @@ def run_original(code: str, workdir: str, style_id: str) -> str:
         plt.close("all")
         return png, ns
     finally:
+        plt.close("all")
         os.chdir(cwd)
 
 
@@ -161,7 +162,7 @@ def compare_style(style_id: str) -> tuple:
 
     src = os.path.join(ATTACH_DIR, fname)
     if not os.path.exists(src):
-        return False, f"附件缺失: {fname}"
+        return False, f"基准脚本缺失: {fname}"
     with open(src, "r", encoding="utf-8") as fh:
         code = fh.read()
 

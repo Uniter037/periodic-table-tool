@@ -102,6 +102,7 @@ def test_gui_preview_canvas(app):
     app.mode_combo.current(0)
     app._on_style_change()
     app._load_demo()
+    app._refresh_preview_now()
     assert app.preview.hit_map, "预览命中表不应为空"
     # 命中表覆盖实际元素坐标：H 格（重构布局 group1/period1，y=8.7-1.1=7.6）
     hit = app.preview.hit_test(0.5, 8.0)
@@ -131,13 +132,14 @@ def test_gui_colorbar_toggle(app, monkeypatch):
     app.mode_combo.current(0)
     app._on_style_change()
     app._load_demo()
+    app._refresh_preview_now()
     monkeypatch.setattr(main.messagebox, "showwarning", lambda *a, **k: None)
     app.show_cbar_var.set(False)
-    app._refresh_preview()
+    app._refresh_preview_now()
     assert app.preview.fig is not None
     assert len(app.preview.fig.axes) == 1
     app.show_cbar_var.set(True)
-    app._refresh_preview()
+    app._refresh_preview_now()
     assert len(app.preview.fig.axes) == 2
 
 
@@ -149,6 +151,7 @@ def test_gui_preset_flow(app, tmp_path, monkeypatch):
     app.mode_combo.current(0)
     app._on_style_change()
     app._load_demo()
+    app._refresh_preview_now()
     saved_data = dict(app.data)            # 记录预设保存时的数据
     app.preset_name_var.set("测试预设")
     app._preset_save()

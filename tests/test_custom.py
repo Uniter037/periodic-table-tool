@@ -93,7 +93,7 @@ def test_custom_labels_reconstructed_render(app):
     # 清空旧预览状态，防止旧 figure 残留导致误报
     app.preview.fig = None
     app.preview.hit_map = {}
-    app._refresh_preview()
+    app._refresh_preview_now()
     assert "预览失败" not in app.status_var.get(), app.status_var.get()
     assert app.preview.fig is not None
     assert app.preview.hit_map, "重构布局命中表不应为空"
@@ -104,7 +104,7 @@ def test_custom_labels_reconstructed_render(app):
 
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_custom_nan_and_inf_rejected(app):
-    """NaN/Inf 的 vmin/figsize 被拒绝或回退默认，不污染渲染。"""
+    """非法范围和画幅明确拒绝，不能静默改变用户的输出尺寸。"""
     ids = list(main.STYLES.keys())
     app.mode_combo.current(ids.index("custom"))
     app._on_style_change()
@@ -118,18 +118,15 @@ def test_custom_nan_and_inf_rejected(app):
     app.param_vars["vmax"].set("inf")
     with pytest.raises(ValueError):
         app._apply_custom_params(main.STYLES["custom"])
-    # figsize 超上限 → 截断到 40
+    # figsize 超上限、非有限数及错误格式均明确拒绝。
     app.param_vars["vmax"].set("1")
-    app.param_vars["figsize"].set("100x100")
-    work = app._apply_custom_params(main.STYLES["custom"])
-    assert work["figsize"] == (40.0, 40.0)
-    # figsize NaN / 非法 → 保持默认
-    app.param_vars["figsize"].set("nanx5")
-    work = app._apply_custom_params(main.STYLES["custom"])
-    assert work.get("figsize", (10, 5)) == (10, 5)
-    app.param_vars["figsize"].set("abc")
-    work = app._apply_custom_params(main.STYLES["custom"])
-    assert work.get("figsize", (10, 5)) == (10, 5)
+    app.param_vars["vcenter"].set("0.5")
+    for invalid_size in ("100x100", "nanx5", "abc"):
+        app.param_vars["figsize"].set(invalid_size)
+        with pytest.raises(ValueError):
+            app._apply_custom_params(main.STYLES["custom"])
+    app.param_vars["figsize"].set("12x6")
+    assert app._apply_custom_params(main.STYLES["custom"])["figsize"] == (12, 6)
     # 范围顺序非法 → 抛错（vmin >= vmax）
     app.param_vars["vmin"].set("5")
     app.param_vars["vmax"].set("1")
