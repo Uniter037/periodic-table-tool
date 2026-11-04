@@ -27,11 +27,11 @@ def known_symbols() -> set:
     return set(_SYMBOLS)
 
 
-def parse_data(text: str) -> dict:
+def parse_data(text: str, *, preserve_text: bool = False) -> dict:
     """解析用户输入文本，返回 {元素符号: 值} 字典。
 
-    值保留原始文本形态：能被 float() 解析则转 float，否则保留字符串
-    （标注类模式使用字符串值，如 '3c1'）。
+    默认将可解析的数字转成数值；preserve_text=True 保留数字的书写形式
+    和引号内的标注文本，在热图渲染边界再调用 convert_data。
     """
     text = (text or "").lstrip("\ufeff").strip()
     if not text:
@@ -40,17 +40,18 @@ def parse_data(text: str) -> dict:
     # 1) 字典 / JSON 文本
     if text.startswith("{") and text.endswith("}"):
         try:
-            parsed = json.loads(text, object_pairs_hook=_unique_pairs)
+            options = {"parse_int": str, "parse_float": str} if preserve_text else {}
+            parsed = json.loads(text, object_pairs_hook=_unique_pairs, **options)
         except json.JSONDecodeError:
             # 尝试 Python 字面量（单引号、裸 True 等）
             try:
-                parsed = _safe_eval_dict(text)
+                parsed = _safe_eval_dict(text, preserve_text=preserve_text)
             except SyntaxError as exc:
                 raise ValueError("无法解析字典格式的数据，请检查格式") from exc
         result = {}
         for key, val in parsed.items():
             if val is not None and str(val).strip():
-                result[str(key).strip()] = _coerce(val)
+                result[str(key).strip()] = _raw_value(val) if preserve_text else _coerce(val)
         return result
 
     # 2) CSV / TSV (including Excel clipboard) and legacy separated lines.
@@ -75,7 +76,8 @@ def parse_data(text: str) -> dict:
                 raise ValueError(f"第 {lineno} 行 CSV/TSV 格式错误: {exc}") from exc
             if len(row) != 2:
                 raise ValueError(f"第 {lineno} 行需要两列: {line!r}")
-            sym, val = (part.strip() for part in row)
+            sym = row[0].strip()
+            val = row[1] if preserve_text else row[1].strip()
         else:
             m = line_pattern.match(line)
             if not m:
@@ -86,7 +88,7 @@ def parse_data(text: str) -> dict:
                     raise ValueError(f"第 {lineno} 行无法解析: {line!r}")
             else:
                 sym, val = m.groups()
-        if first_row and (sym.lower(), val.lower()) in {
+        if first_row and (sym.lower(), val.strip().lower()) in {
             ("element", "value"), ("元素", "数值")
         }:
             first_row = False
@@ -98,7 +100,41 @@ def parse_data(text: str) -> dict:
             raise ValueError(f"第 {lineno} 行元素符号无效: {sym!r}")
         pairs.append((sym, val))
     parsed = _unique_pairs(pairs)
-    return {sym: _coerce(val) for sym, val in parsed.items() if str(val).strip()}
+    return {sym: (_raw_value(val) if preserve_text else _coerce(val))
+            for sym, val in parsed.items() if str(val).strip()}
+
+
+def _raw_value(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("数据必须是文本或数字")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("数据必须是有限数值")
+    return str(value)
+
+
+def convert_data(data, kind):
+    """The document retains text; conversion happens only at the render boundary."""
+    if kind not in ("labels", "heatmap"):
+        raise ValueError(f"未知数据类型：{kind}")
+    result = {}
+    for symbol, value in data.items():
+        if symbol not in _SYMBOLS:
+            raise ValueError(f"未知元素：{symbol}")
+        text = _raw_value(value)
+        if not text.strip():
+            continue
+        if kind == "labels":
+            result[symbol] = text
+        else:
+            try:
+                # Native integers from script/demo data keep raw-format pixels.
+                number = value if isinstance(value, (int, float)) else float(text)
+            except ValueError as exc:
+                raise ValueError(f"{symbol}={text!r} 不是数字；请使用标注图") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"{symbol} 必须为有限数值")
+            result[symbol] = number
+    return result
 
 
 def _record_delimiter(line):
@@ -138,13 +174,18 @@ def _coerce(val):
     return result
 
 
-def _safe_eval_dict(text: str) -> dict:
+def _safe_eval_dict(text: str, *, preserve_text=False) -> dict:
     """安全解析 Python 字典字面量（只允许基本类型）。"""
     import ast
     node = ast.parse(text, mode="eval").body
     if not isinstance(node, ast.Dict):
         raise ValueError("需要字典")
-    return _unique_pairs((ast.literal_eval(key), ast.literal_eval(value))
+    def value_of(value):
+        result = ast.literal_eval(value)
+        if preserve_text and isinstance(result, (int, float)) and not isinstance(result, bool):
+            return ast.get_source_segment(text, value)
+        return result
+    return _unique_pairs((ast.literal_eval(key), value_of(value))
                          for key, value in zip(node.keys, node.values))
 
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""元素周期表绘图工具 - 图形化入口（v1.1 迭代版）。
+"""元素周期表绘图工作台 - 项目编辑、科学绘图与兼容输出。
 
 运行: python main.py
 
@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import sys
@@ -56,6 +57,10 @@ from core import (STYLES, parse_data, validate_data, demo_data,
                   save_figure, auto_name, PresetStore)
 from core.ptable import build_elements, xy_bounds_for, CELL_STEP
 from core.elements_data import ALL_SYMBOLS
+from core.dataio import convert_data
+from core.document import History, read_document, write_document, user_directory
+from core.scientific import corrected_style, colorbar_config, range_warnings
+from core.jobs import RenderJob
 from ui.preview import PreviewCanvas
 from ui.scrolling import ScrollableFrame
 _smoke_log("import:after_core")
@@ -63,7 +68,7 @@ _smoke_log("import:after_core")
 SYMBOLS = set(ALL_SYMBOLS)
 FORMATS = ["svg", "png", "pdf"]
 DEFAULT_COLORS = [(0.1726, 0.2941, 0.4588), (1, 1, 1), (0.5686, 0.1333, 0.1098)]
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".periodic-table-tool.json")
+CONFIG_PATH = str(user_directory() / "settings.json")
 # 自动布局：窗口宽度低于该值时切换为上下分栏
 AUTO_SPLIT_THRESHOLD = 1150
 LAYOUT_MODES = (
@@ -94,7 +99,7 @@ FONT_CHOICES = {"Arial": "Arial", "Helvetica": "Helvetica",
 EDGE_CHOICES = {"无边框": "none", "黑色细线": "black"}
 EMPTY_CHOICES = {"浅灰": "#f0f0f0", "白色": "white", "白色(w)": "w", "透明": "none"}
 FMT_CHOICES = {"百分比 2 位": "percent2", "两位小数": "2f", "三位小数": "3f",
-               "四位小数": "4f", "原始": "raw"}
+               "四位小数": "4f", "科学计数法": "scientific", "原始": "raw"}
 DPI_CHOICES = {"72": 72, "100": 100, "150": 150, "300": 300}
 _REV = {name: {v: k for k, v in m.items()} for name, m in
         (("layout", LAYOUT_CHOICES), ("kind", KIND_CHOICES),
@@ -218,7 +223,7 @@ class DataTable(tk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工作台 · 重设计版")
+        self.title("元素周期表绘图工作台 · v1.6.0")
         self.geometry("1180x760")
         self.minsize(800, 560)
         self._refresh_job = None
@@ -229,7 +234,21 @@ class App(tk.Tk):
         self.last_output = None
         self.data = {}                       # 统一数据源 {符号: 值}
         self.custom_colors = list(DEFAULT_COLORS)
-        self.presets = PresetStore(os.path.join(PROJECT_ROOT, "presets"))
+        self.user_dir = user_directory()
+        if not os.environ.get("PTT_USER_DIR"):
+            self._migrate_user_files()
+        self.presets = PresetStore(str(self.user_dir / "presets"))
+        self._style_states = {}
+        self._active_style = None
+        self._restoring = True
+        self._history = None
+        self._draft_job = None
+        self._recovery_pending = (self.user_dir / "draft.ptproj").is_file() and os.environ.get("PTT_SMOKE") != "1"
+        self._worker = RenderJob()
+        self._poll_job = None
+        self._job_mode = None
+        self._pending_preview = False
+        self.project_path = None
         self._main = None
         self._left = None
         self._right = None
@@ -245,11 +264,35 @@ class App(tk.Tk):
 
         self._build_ui()
         self._on_style_change()
+        self._restoring = False
+        self._history = History(self._document_snapshot())
+        self._saved_snapshot = self._document_snapshot()
+        self._refresh_preview()
+        if self._recovery_pending:
+            self.after_idle(self._offer_recovery)
         # 随窗口大小自动调整布局
         self.bind("<Configure>", self._on_window_resize)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
+    def _migrate_user_files(self):
+        """Copy only absent legacy user files; never overwrite an edited preset."""
+        import shutil
+        from pathlib import Path
+        try:
+            self.user_dir.mkdir(parents=True, exist_ok=True)
+            legacy = Path.home() / ".periodic-table-tool.json"
+            target = self.user_dir / "settings.json"
+            if legacy.is_file() and not target.exists():
+                shutil.copy2(legacy, target)
+            destination = self.user_dir / "presets"
+            destination.mkdir(exist_ok=True)
+            for source in (Path(PROJECT_ROOT) / "presets").glob("*.json"):
+                if not (destination / source.name).exists():
+                    shutil.copy2(source, destination / source.name)
+        except OSError:
+            pass
+
     def _restore_geometry(self):
         """以 Tk 的逻辑像素限幅并居中，丢弃旧屏幕坐标与超屏尺寸。"""
         import re
@@ -295,12 +338,21 @@ class App(tk.Tk):
             "preview_ratio": self.preview_ratio,
         }
         try:
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
             with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, ensure_ascii=False, indent=2)
         except OSError:
             pass
 
     def destroy(self):
+        if self._draft_job is not None:
+            self.after_cancel(self._draft_job)
+            self._draft_job = None
+        if getattr(self, "_worker", None) is not None:
+            self._worker.cancel()
+        if getattr(self, "_poll_job", None) is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
         self._cancel_refresh()
         if self._ratio_job is not None:
             self.after_cancel(self._ratio_job)
@@ -308,20 +360,29 @@ class App(tk.Tk):
         super().destroy()
 
     def _on_close(self):
+        self._commit_table_edit()
+        if not self._confirm_discard():
+            return
         self._save_config()
+        self._remove_draft()
         self.destroy()
 
     # ------------------------------------------------------------------
     # 布局
     # ------------------------------------------------------------------
     def _effective_layout(self) -> str:
-        """自动布局始终保留侧栏；旧配置的手动上下布局仍可使用。"""
-        return "split-v" if self.layout_mode == "split-v" else "split-h"
+        if self.layout_mode == "auto":
+            return "split-v" if 1 < self.winfo_width() < AUTO_SPLIT_THRESHOLD else "split-h"
+        return self.layout_mode
 
     def _apply_layout(self):
         if self._main is None:
             return
         layout = self._effective_layout()
+        if layout == "split-v":
+            self._left.configure(height=max(110, min(190, round(self.winfo_height() * .20))))
+        if self._right is not None and self._right.panes():
+            self._right.paneconfigure(self._right.panes()[0], minsize=210 if layout == "split-v" and self.winfo_height() < 700 else 252)
         if layout == self._current_layout:
             return
         self._current_layout = layout
@@ -338,7 +399,7 @@ class App(tk.Tk):
         else:
             main.columnconfigure(0, weight=1)
             main.rowconfigure(1, weight=1)
-            self._left.configure(height=190)
+            self._left.configure(height=max(110, min(190, round(self.winfo_height() * .20))))
             self._left.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
             self._right.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
 
@@ -434,6 +495,18 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _build_ui(self):
         menubar = tk.Menu(self)
+        project_menu = tk.Menu(menubar, tearoff=0)
+        project_menu.add_command(label="打开项目…", command=self._open_project)
+        project_menu.add_command(label="保存项目", command=self._save_project)
+        project_menu.add_command(label="项目另存为…", command=lambda: self._save_project(save_as=True))
+        project_menu.add_command(label="批量导出（共用当前色标）…", command=self._batch_export)
+        project_menu.add_separator()
+        project_menu.add_command(label="撤销  Ctrl+Z", command=self._undo)
+        project_menu.add_command(label="重做  Ctrl+Y", command=self._redo)
+        menubar.add_cascade(label="项目", menu=project_menu)
+        self.bind("<Control-z>", lambda e: self._undo())
+        self.bind("<Control-y>", lambda e: self._redo())
+        self.bind("<Control-s>", lambda e: self._save_project())
         view_menu = tk.Menu(menubar, tearoff=0)
         self.layout_var = tk.StringVar(value=self.layout_mode)
         for mode, label in LAYOUT_MODES:
@@ -451,6 +524,7 @@ class App(tk.Tk):
             ratio_menu.add_radiobutton(label=f"预览区 {ratio:.0%}", variable=self.ratio_var,
                                       value=ratio, command=self._on_ratio_change)
         view_menu.add_cascade(label="预览区域大小（也可拖动分隔条）", menu=ratio_menu)
+        view_menu.add_command(label="预览适合窗口（滚轮缩放，右键拖动）", command=lambda: self.preview.fit())
         menubar.add_cascade(label="视图", menu=view_menu)
         self.config(menu=menubar)
 
@@ -463,7 +537,7 @@ class App(tk.Tk):
         style.configure("Export.TButton", font=("Microsoft YaHei", 10, "bold"), padding=(14, 6))
         self.toolbar_buttons = {}
         for label, command in (("导入文件", self._import_file), ("粘贴数据", self._paste_data),
-                               ("载入示例", self._load_demo), ("导出图片", self.generate),
+                               ("载入示例", self._load_demo), ("导出图片", self.generate_async),
                                ("打开输出目录", self._open_out_dir)):
             button = ttk.Button(self.toolbar, text=label, command=command,
                                 style="Export.TButton" if label == "导出图片" else "TButton")
@@ -472,7 +546,11 @@ class App(tk.Tk):
         self._status = ttk.Frame(self, padding=(8, 4))
         self._status.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="就绪 · 导入、粘贴或载入示例开始绘图")
-        ttk.Label(self._status, textvariable=self.status_var, anchor="w").pack(fill="x")
+        self._status.columnconfigure(0, weight=1)
+        ttk.Label(self._status, textvariable=self.status_var, anchor="w").grid(row=0, column=0, sticky="ew")
+        self.progress = ttk.Progressbar(self._status, mode="determinate", maximum=100, length=100)
+        self.progress.grid(row=0, column=1, padx=6)
+        ttk.Button(self._status, text="取消任务", command=self._cancel_job).grid(row=0, column=2)
         main = self._main = ttk.Frame(self, padding=(8, 0, 8, 0))
         main.pack(fill="both", expand=True)
         left = self._left = ttk.Frame(main, width=330, height=200)
@@ -496,6 +574,9 @@ class App(tk.Tk):
         self.mode_combo.pack(fill="x", pady=(2, 6))
         self.mode_combo.current(list(STYLES).index("custom"))
         self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_style_change())
+        self.compat_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(graph, text="原脚本兼容（保留历史零值与色标行为）",
+                        variable=self.compat_var, command=self._compat_changed).pack(anchor="w")
         self.file_label = ttk.Label(graph, foreground="#666666", wraplength=280)
         self.file_label.pack(anchor="w")
         self.hint_label = ttk.Label(graph, foreground="#666666", wraplength=280)
@@ -521,9 +602,16 @@ class App(tk.Tk):
             ("symbol_fs", "元素符号字号（pt）", None),
             ("number_fs", "原子序数字号（pt）", None),
             ("value_fs", "数值 / 标注字号（pt）", None),
-            ("edge", "格子边框", list(EDGE_CHOICES)),
+            ("edge_width", "边框线宽（pt，0 为无边框）", None),
+            ("edge_color", "边框颜色（名称或 #RRGGBB）", None),
+            ("value_dx", "标注水平偏移（格宽）", None),
+            ("value_dy", "标注垂直偏移（格高）", None),
+            ("label_wrap", "标注每行字符数（0 不自动换行）", None),
+            ("unit", "数值后缀 / 单位", None),
+            ("edge", "边框快捷设置（可继续调整线宽和颜色）", list(EDGE_CHOICES)),
             ("empty", "空值格颜色", list(EMPTY_CHOICES))):
             field(graph, key, label, choices)
+        self.param_vars["edge"].trace_add("write", self._edge_preset_changed)
         self.bool_vars = {}
         for key, label, parent, default in (
             ("show_symbol", "显示元素符号", graph, True),
@@ -547,6 +635,7 @@ class App(tk.Tk):
         color_lf.pack(fill="x", pady=6)
         self.color_buttons = []
         self._build_color_row(color_lf)
+        field(colors, "color_nodes", "颜色节点：位置:颜色；例如 0:#0000ff;0.3:#ffffff;1:#ff0000")
         color_actions = ttk.Frame(color_lf)
         color_actions.pack(fill="x", pady=4)
         for label, command in (("添加", self._add_color), ("移除最后", self._remove_color),
@@ -559,6 +648,10 @@ class App(tk.Tk):
                         command=self._refresh_preview).pack(anchor="w", pady=4)
         field(colors, "cbar_orientation", "颜色条方向", ["vertical", "horizontal"])
         field(colors, "cbar_label", "颜色条标题 / 单位")
+        field(colors, "cbar_location", "颜色条位置（自动跟随方向或手动）", ["auto", "left", "right", "top", "bottom"])
+        for key, label in (("cbar_fraction", "颜色条宽度比例"), ("cbar_pad", "颜色条间距比例"),
+                           ("cbar_shrink", "颜色条长度比例")):
+            field(colors, key, label)
         self.show_cbar_labels_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(colors, text="显示刻度标签（隐藏后可恢复）", variable=self.show_cbar_labels_var,
                         command=self._refresh_preview).pack(anchor="w", pady=4)
@@ -566,10 +659,12 @@ class App(tk.Tk):
         cbar_lf.pack(fill="x", pady=6)
         tree_row = ttk.Frame(cbar_lf)
         tree_row.pack(fill="x")
-        self.cbar_tree = ttk.Treeview(tree_row, columns=("v", "l"), show="headings", height=4,
+        self.cbar_tree = ttk.Treeview(tree_row, columns=("v", "l", "visible"), show="headings", height=4,
                                      selectmode="browse")
         self.cbar_tree.heading("v", text="刻度值")
         self.cbar_tree.heading("l", text="标签")
+        self.cbar_tree.heading("visible", text="显示")
+        self.cbar_tree.column("visible", width=42, stretch=False)
         self.cbar_tree.column("v", width=75, minwidth=40)
         self.cbar_tree.column("l", width=125, minwidth=60)
         self.cbar_tree.pack(side="left", fill="both", expand=True)
@@ -586,6 +681,8 @@ class App(tk.Tk):
                                                 ("删除选中", self._cbar_delete), ("恢复默认", self._cbar_reset))):
             ttk.Button(cbar_btns, text=label, command=command).grid(row=index // 2, column=index % 2, sticky="ew")
         cbar_btns.columnconfigure((0, 1), weight=1)
+        ttk.Button(cbar_lf, text="显示 / 隐藏选中刻度", command=self._cbar_toggle).pack(fill="x")
+        ttk.Button(cbar_lf, text="按数值排序", command=self._cbar_sort).pack(fill="x")
         self.cbar_controls = (cbar_lf,)
 
         for key, label, choices in (("dpi", "输出分辨率 dpi", list(DPI_CHOICES)),
@@ -596,6 +693,8 @@ class App(tk.Tk):
         ttk.Combobox(export, textvariable=self.fmt_var, values=FORMATS, state="readonly").pack(fill="x")
         ttk.Label(export, text="输出目录").pack(anchor="w", pady=(8, 2))
         self.out_var = tk.StringVar(value=self.out_dir)
+        self.fmt_var.trace_add("write", self._record_document_change)
+        self.out_var.trace_add("write", self._record_document_change)
         ttk.Entry(export, textvariable=self.out_var).pack(fill="x")
         ttk.Button(export, text="选择输出目录", command=self._choose_out_dir).pack(fill="x", pady=4)
         ttk.Label(export, text="导出会自动命名，不覆盖已有文件。", wraplength=280).pack(anchor="w", pady=4)
@@ -621,7 +720,7 @@ class App(tk.Tk):
         ttk.Checkbutton(prev_lf, text="图形化标注：点击元素格编辑", variable=self.mark_mode_var).pack(anchor="w")
         data_nb = self.data_notebook = ttk.Notebook(right)
         right.add(prev_lf, minsize=252, height=440, stretch="always")
-        right.add(data_nb, minsize=120, height=180, stretch="never")
+        right.add(data_nb, minsize=150, height=180, stretch="never")
         right.bind("<ButtonRelease-1>", self._remember_preview_ratio)
         right.bind("<Map>", lambda e: self._schedule_ratio())
         tab_table = ttk.Frame(data_nb, padding=4)
@@ -683,6 +782,8 @@ class App(tk.Tk):
     def _current_work_style(self):
         """当前生效的样式：自定义模式应用面板参数；任意模式注入颜色条标注覆盖。"""
         style = STYLES[self._current_style_id()]
+        if not self.compat_var.get() and style.get("kind") != "cmap":
+            style = corrected_style(style)
         work = (self._apply_custom_params(style)
                 if style.get("customizable") else style)
         if self.cbar_override is not None:
@@ -692,6 +793,7 @@ class App(tk.Tk):
             work["cbar"] = {**self.cbar_override,
                             "ticks": list(self.cbar_override["ticks"]),
                             "labels": list(self.cbar_override["labels"])}
+            work["cbar"] = colorbar_config(work["cbar"])
         # 隐藏标签只作用于本次渲染，不销毁用户输入和默认刻度。
         if not self.show_cbar_labels_var.get():
             work = dict(work)
@@ -703,15 +805,31 @@ class App(tk.Tk):
         return work
 
     def _on_style_change(self):
+        self._commit_table_edit()
+        restoring = self._restoring
+        self._restoring = True
+        if self._active_style is not None:
+            previous = self._current_preset_payload()
+            previous["mode_id"] = self._active_style
+            self._style_states[self._active_style] = copy.deepcopy(previous)
         style_id = self._current_style_id()
         style = STYLES[style_id]
+        self._active_style = style_id
+        self.cbar_override = None
+        self.custom_colors = list(DEFAULT_COLORS)
+        self.show_cbar_var.set(True)
+        self.show_cbar_labels_var.set(True)
+        saved = self._style_states.get(style_id)
+        self.compat_var.set(saved.get("compatibility", False) if saved else False)
+        if not self.compat_var.get() and style.get("kind") != "cmap":
+            style = corrected_style(style)
         self.file_label.config(text=f"对应原脚本：{style['file']}")
 
         norm = style.get("norm")
         self.param_vars["cmap"].set(_cmap_name(style))
-        self.param_vars["vmin"].set(str(norm[1]) if norm else "")
+        self.param_vars["vmin"].set(str(norm[1]) if norm else "0")
         self.param_vars["vcenter"].set(str(norm[2]) if norm and norm[0] == "twoslope" else "")
-        self.param_vars["vmax"].set(str(norm[-1]) if norm else "")
+        self.param_vars["vmax"].set(str(norm[-1]) if norm else "1")
         # 组合类参数：样式值 → 中文标签回填（不在映射中则显示原始值/默认）
         self.param_vars["fmt"].set(_REV["fmt"].get(style.get("fmt", ""),
                                                    style.get("fmt", "")))
@@ -728,7 +846,12 @@ class App(tk.Tk):
         self.param_vars["figsize"].set("10x5")
         self.param_vars["title"].set("")
         for key, default in (("symbol_fs", 9), ("number_fs", 6), ("value_fs", 6),
-                             ("cbar_orientation", "vertical"), ("cbar_label", "")):
+                             ("cbar_orientation", "vertical"), ("cbar_label", ""),
+                             ("edge_width", style.get("edge", (0, "black"))[0] if style.get("edge") else 0),
+                             ("edge_color", "black"), ("value_dx", 0), ("value_dy", 0),
+                             ("label_wrap", 0), ("unit", ""), ("color_nodes", ""),
+                             ("cbar_location", "auto"), ("cbar_fraction", .046),
+                             ("cbar_pad", .04), ("cbar_shrink", 1)):
             self.param_vars[key].set(str(style.get(key, default)))
         for key, var in self.bool_vars.items():
             var.set(style.get(key, key != "transparent"))
@@ -737,6 +860,9 @@ class App(tk.Tk):
             self.param_vars["vcenter"].set("0")
             self.param_vars["vmax"].set("1")
 
+        if saved:
+            self._apply_payload(saved, include_data=False)
+        self._build_color_row(self.color_frame)
         editable = style.get("customizable", False)
         for key in self.param_entries:
             w = self.param_entries[key]
@@ -759,7 +885,172 @@ class App(tk.Tk):
 
         self._preset_refresh()
         self._cbar_refresh_tree()
+        self._restoring = restoring
         self._refresh_preview()
+
+    def _compat_changed(self):
+        sid = self._current_style_id()
+        enabled = not self.compat_var.get() or sid == "custom"
+        for key, widget in self.param_entries.items():
+            widget.configure(state=("readonly" if isinstance(widget, ttk.Combobox) and key != "font" else "normal") if enabled else "disabled")
+        for widget in self.custom_controls + self.color_buttons:
+            widget.configure(state="normal" if enabled else "disabled")
+        self._refresh_preview()
+
+    def _apply_payload(self, payload, include_data=True):
+        for key, value in payload.get("params", {}).items():
+            if key in self.param_vars:
+                self.param_vars[key].set(str(value))
+        params = payload.get("params", {})
+        if "edge" in params and "edge_width" not in params:
+            self.param_vars["edge_width"].set("0.5" if params["edge"] == "黑色细线" else "0")
+        for key, variable in self.bool_vars.items():
+            variable.set(payload.get("display", {}).get(key, key != "transparent") is True)
+        self.compat_var.set(payload.get("compatibility", False) is True)
+        self.show_cbar_var.set(payload.get("show_cbar", True) is True)
+        self.show_cbar_labels_var.set(payload.get("show_cbar_labels", True) is True)
+        self.cbar_override = copy.deepcopy(payload.get("cbar_override"))
+        if self.cbar_override is not None:
+            colorbar_config(self.cbar_override)
+        self.custom_colors = self._sanitize_colors(payload.get("custom_colors"))
+        if include_data:
+            self.data = copy.deepcopy(payload.get("data", {}))
+            self.table.set_data(self.data)
+            if "output_format" in payload:
+                self.fmt_var.set(payload["output_format"])
+            if "output_dir" in payload:
+                self.out_var.set(payload["output_dir"])
+
+    def _validate_payload(self, payload):
+        if not isinstance(payload, dict) or payload.get("mode_id") not in STYLES:
+            raise ValueError("未知项目 / 预设样式")
+        if not isinstance(payload.get("params", {}), dict) or not isinstance(payload.get("display", {}), dict):
+            raise ValueError("项目参数必须是字典")
+        if not isinstance(payload.get("data", {}), dict):
+            raise ValueError("项目数据必须是字典")
+        # Validate structure without coercing annotation text or discarding unknown symbols.
+        for key, value in payload.get("data", {}).items():
+            if not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ValueError("项目数据必须是元素对应文本或数字")
+        if payload.get("output_format", "svg") not in FORMATS:
+            raise ValueError("输出格式无效")
+        if payload.get("cbar_override") is not None:
+            colorbar_config(payload["cbar_override"])
+        json.dumps(payload, allow_nan=False)
+
+    def _document_snapshot(self):
+        current = copy.deepcopy(self._current_preset_payload())
+        states = copy.deepcopy(self._style_states)
+        states[current["mode_id"]] = current
+        return {"schema": 1, "current": current, "styles": states}
+
+    def _restore_document(self, snapshot):
+        payload = snapshot["current"]
+        for item in [payload, *snapshot["styles"].values()]:
+            self._validate_payload(item)
+        self._restoring = True
+        try:
+            self._style_states = copy.deepcopy(snapshot["styles"])
+            self._style_states[payload["mode_id"]] = copy.deepcopy(payload)
+            self._active_style = None
+            self.mode_combo.current(list(STYLES).index(payload["mode_id"]))
+            self._on_style_change()
+            self._apply_payload(payload)
+            self._cbar_refresh_tree()
+        finally:
+            self._restoring = False
+        self._refresh_preview()
+
+    def _undo(self):
+        self._commit_table_edit()
+        self._history.record(self._document_snapshot())
+        self._restore_document(self._history.step(-1))
+        self.status_var.set("已撤销（已导出的文件不受影响）")
+        return "break"
+
+    def _redo(self):
+        self._commit_table_edit()
+        self._history.record(self._document_snapshot())
+        self._restore_document(self._history.step(1))
+        self.status_var.set("已重做")
+        return "break"
+
+    def _save_draft(self):
+        self._draft_job = None
+        if os.environ.get("PTT_SMOKE") == "1" or self._recovery_pending:
+            return
+        if self._document_snapshot() == self._saved_snapshot:
+            self._remove_draft()
+            return
+        try:
+            write_document(self.user_dir / "draft.ptproj", self._document_snapshot())
+        except (OSError, ValueError, TypeError) as exc:
+            self.status_var.set(f"自动草稿保存失败：{exc}")
+
+    def _remove_draft(self):
+        try:
+            (self.user_dir / "draft.ptproj").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _offer_recovery(self):
+        draft = self.user_dir / "draft.ptproj"
+        try:
+            if draft.exists():
+                snapshot = read_document(draft)
+                if messagebox.askyesno("恢复工作", "发现上次未完成的工作草稿，是否恢复？", parent=self):
+                    self._restore_document(snapshot)
+                else:
+                    self._remove_draft()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.status_var.set(f"草稿无法恢复：{exc}")
+        finally:
+            self._recovery_pending = False
+
+    def _confirm_discard(self):
+        if os.environ.get("PTT_SMOKE") == "1" or self._document_snapshot() == self._saved_snapshot:
+            return True
+        result = messagebox.askyesnocancel("未保存的工作", "是否先保存当前项目？", parent=self)
+        return self._save_project() if result is True else result is False
+
+    def _save_project(self, save_as=False, path=None):
+        self._commit_table_edit()
+        path = path or (None if save_as else self.project_path)
+        path = path or filedialog.asksaveasfilename(title="保存绘图项目", defaultextension=".ptproj",
+                                                   filetypes=[("绘图项目", "*.ptproj")])
+        if not path:
+            return False
+        try:
+            snapshot = self._document_snapshot()
+            write_document(path, snapshot)
+            self.project_path, self._saved_snapshot = str(path), snapshot
+            self._remove_draft()
+            self.status_var.set(f"项目已保存：{path}")
+            return True
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("保存失败", str(exc))
+            return False
+
+    def _open_project(self, path=None):
+        if not self._confirm_discard():
+            return False
+        path = path or filedialog.askopenfilename(title="打开绘图项目", filetypes=[("绘图项目", "*.ptproj")])
+        if not path:
+            return False
+        before = self._document_snapshot()
+        try:
+            snapshot = read_document(path)
+            self._restore_document(snapshot)
+            self.project_path = str(path)
+            self._saved_snapshot = self._document_snapshot()
+            self._history = History(self._saved_snapshot)
+            self._remove_draft()
+            self.status_var.set(f"项目已打开：{path}")
+            return True
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._restore_document(before)
+            messagebox.showerror("打开失败", str(exc))
+            return False
 
     # ------------------------------------------------------------------
     # 数据
@@ -802,7 +1093,7 @@ class App(tk.Tk):
 
     def _import_text(self, text, source="粘贴数据"):
         """文件与粘贴的共同入口；解析失败时保持原数据不变。"""
-        data = parse_data(text)
+        data = parse_data(text, preserve_text=True)
         if not data:
             raise ValueError("没有可解析的数据")
         unknown = [s for s in data if s not in SYMBOLS]
@@ -851,21 +1142,7 @@ class App(tk.Tk):
             self.table._commit_edit(self.table._edit_item, self.table._edit_entry)
 
     def _validated_data(self, kind):
-        if kind == "labels":
-            unknown = [s for s in self.data if s not in known_symbols()]
-            if unknown:
-                raise ValueError(f"未知元素：{', '.join(map(str, unknown))}；请修正后再导出")
-            return dict(self.data)
-        data, unknown, bad = validate_data(self.data)
-        bad += [(s, v) for s, v in data.items() if isinstance(v, str)]
-        if unknown or bad:
-            details = []
-            if unknown:
-                details.append("未知元素：" + ", ".join(map(str, unknown)))
-            if bad:
-                details.append("非有效数字：" + ", ".join(f"{s}={v}" for s, v in bad))
-            raise ValueError("；".join(details) + "。请修正数据或使用标注图")
-        return data
+        return convert_data(self.data, kind)
 
     def _auto_range(self):
         self._commit_table_edit()
@@ -978,7 +1255,7 @@ class App(tk.Tk):
     def _cbar_select(self, event=None):
         selection = self.cbar_tree.selection()
         if selection:
-            value, label = self.cbar_tree.item(selection[0], "values")
+            value, label, *_ = self.cbar_tree.item(selection[0], "values")
             self.cbar_value_var.set(value)
             self.cbar_label_var.set(label)
 
@@ -986,15 +1263,40 @@ class App(tk.Tk):
         """把当前标注刷新到 Treeview 显示。"""
         ticks, labels = self._cbar_current_entries()
         self.cbar_tree.delete(*self.cbar_tree.get_children())
-        for t, l in zip(ticks, labels):
-            self.cbar_tree.insert("", "end", values=(str(t), str(l)))
+        visible = self._cbar_visibility(len(ticks))
+        for t, l, v in zip(ticks, labels, visible):
+            self.cbar_tree.insert("", "end", values=(str(t), str(l), "是" if v else "否"))
 
-    def _cbar_apply(self, ticks, labels):
+    def _cbar_visibility(self, count):
+        return list((self.cbar_override or {}).get("visible", [True] * count))
+
+    def _cbar_toggle(self):
+        selection = self.cbar_tree.selection()
+        if not selection:
+            return
+        ticks, labels = self._cbar_current_entries()
+        visible = self._cbar_visibility(len(ticks))
+        index = self.cbar_tree.index(selection[0])
+        visible[index] = not visible[index]
+        self._cbar_apply(ticks, labels, visible)
+
+    def _cbar_sort(self):
+        ticks, labels = self._cbar_current_entries()
+        rows = sorted(zip(ticks, labels, self._cbar_visibility(len(ticks))))
+        self._cbar_apply([r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows])
+
+    def _cbar_apply(self, ticks, labels, visible=None):
         """写入覆盖并刷新预览。"""
         cfg = STYLES[self._current_style_id()].get("cbar")
         fontsize = cfg["fontsize"] if cfg else 8
-        self.cbar_override = {"ticks": ticks, "labels": labels,
-                              "fontsize": fontsize}
+        candidate = {"ticks": ticks, "labels": labels, "fontsize": fontsize,
+                     "visible": visible if visible is not None else [True] * len(ticks)}
+        try:
+            colorbar_config(candidate)
+        except ValueError as exc:
+            self.status_var.set(str(exc))
+            return False
+        self.cbar_override = candidate
         self._cbar_refresh_tree()
         self._refresh_preview()
         self.status_var.set(f"颜色条标注：{len(ticks)} 个刻度")
@@ -1010,9 +1312,10 @@ class App(tk.Tk):
             return
         label = self.cbar_label_var.get().strip()
         ticks, labels = self._cbar_current_entries()
+        visible = self._cbar_visibility(len(ticks)) + [True]
         ticks.append(val)
         labels.append(label)
-        self._cbar_apply(ticks, labels)
+        self._cbar_apply(ticks, labels, visible)
 
     def _cbar_update(self):
         sel = self.cbar_tree.selection()
@@ -1032,7 +1335,7 @@ class App(tk.Tk):
         ticks, labels = self._cbar_current_entries()
         ticks[idx] = val
         labels[idx] = label
-        self._cbar_apply(ticks, labels)
+        self._cbar_apply(ticks, labels, self._cbar_visibility(len(ticks)))
 
     def _cbar_delete(self):
         sel = self.cbar_tree.selection()
@@ -1041,9 +1344,11 @@ class App(tk.Tk):
             return
         idx = self.cbar_tree.index(sel[0])
         ticks, labels = self._cbar_current_entries()
+        visible = self._cbar_visibility(len(ticks))
         ticks.pop(idx)
         labels.pop(idx)
-        self._cbar_apply(ticks, labels)
+        visible.pop(idx)
+        self._cbar_apply(ticks, labels, visible)
 
     def _cbar_reset(self):
         """恢复默认：不覆盖样式自带的颜色条标注。"""
@@ -1062,6 +1367,7 @@ class App(tk.Tk):
 
     def _current_preset_payload(self) -> dict:
         return {
+            "compatibility": self.compat_var.get(),
             "output_format": self.fmt_var.get(),
             "output_dir": self.out_var.get(),
             "mode_id": self._current_style_id(),
@@ -1075,6 +1381,7 @@ class App(tk.Tk):
         }
 
     def _preset_save(self):
+        self._commit_table_edit()
         name = self.preset_name_var.get().strip()
         if not name:
             messagebox.showwarning("提示", "请先输入预设名。")
@@ -1103,63 +1410,19 @@ class App(tk.Tk):
     def _preset_load(self):
         name = self.preset_combo.get() or self.preset_name_var.get().strip()
         if not name:
-            messagebox.showwarning("提示", "请选择或输入要加载的预设名。")
             return
+        self._commit_table_edit()
+        before = self._document_snapshot()
         try:
             payload = self.presets.load(name)
-            # 应用预设（对损坏/篡改的 JSON 整体兜底，避免 tkinter 回调 traceback）
-            mode_id = payload.get("mode_id", "custom")
-            names = [s["name"] for s in STYLES.values()]
-            ids = list(STYLES.keys())
-            if mode_id in ids:
-                self.mode_combo.current(ids.index(mode_id))
-                self._on_style_change()
-            output_format = payload.get("output_format")
-            if isinstance(output_format, str) and output_format in FORMATS:
-                self.fmt_var.set(output_format)
-            output_dir = payload.get("output_dir")
-            if isinstance(output_dir, str) and output_dir.strip():
-                self.out_var.set(output_dir)
-            params = payload.get("params", {})
-            if isinstance(params, dict):
-                for k, v in params.items():
-                    if k in self.param_vars:
-                        self.param_vars[k].set(str(v))
-            display = payload.get("display", {})
-            if isinstance(display, dict):
-                for key, var in self.bool_vars.items():
-                    var.set(display.get(key, key != "transparent") is True)
-            self.show_cbar_var.set(bool(payload.get("show_cbar", True)))
-            self.show_cbar_labels_var.set(payload.get("show_cbar_labels", True) is True)
-            raw_cbar = payload.get("cbar_override")
-            if (isinstance(raw_cbar, dict)
-                    and isinstance(raw_cbar.get("ticks"), list)
-                    and isinstance(raw_cbar.get("labels"), list)
-                    and len(raw_cbar["ticks"]) == len(raw_cbar["labels"])
-                    and all(isinstance(t, (int, float)) and type(t) is not bool
-                            and math.isfinite(t)
-                            for t in raw_cbar["ticks"])):
-                fontsize = raw_cbar.get("fontsize", 8)
-                if not (isinstance(fontsize, (int, float))
-                        and type(fontsize) is not bool
-                        and math.isfinite(fontsize)):
-                    fontsize = 8
-                self.cbar_override = {
-                    "ticks": list(raw_cbar["ticks"]),
-                    "labels": list(raw_cbar["labels"]),
-                    "fontsize": fontsize,
-                }
-            else:
-                self.cbar_override = None
-            self._cbar_refresh_tree()
-            self.custom_colors = self._sanitize_colors(payload.get("custom_colors"))
-            self._build_color_row(self.color_frame)
-            raw_data = payload.get("data", {})
-            self.data = raw_data if isinstance(raw_data, dict) else {}
-            self.table.set_data(self.data)
+            payload.setdefault("mode_id", "custom")
+            self._validate_payload(payload)
+            snapshot = {"schema": 1, "current": payload,
+                        "styles": copy.deepcopy(self._style_states)}
+            self._restore_document(snapshot)
             self.status_var.set(f"已加载预设 {name}")
-            self._refresh_preview()
         except Exception as exc:
+            self._restore_document(before)
             messagebox.showerror("加载失败", str(exc))
 
     def _preset_delete(self):
@@ -1204,14 +1467,39 @@ class App(tk.Tk):
             self.after_cancel(self._refresh_job)
             self._refresh_job = None
 
+    def _edge_preset_changed(self, *args):
+        if self._restoring:
+            return
+        self.param_vars["edge_width"].set("0.5" if self.param_vars["edge"].get() == "黑色细线" else "0")
+        self.param_vars["edge_color"].set("black")
+
+    def _record_document_change(self, *args):
+        if self._restoring or self._history is None:
+            return
+        self._history.record(self._document_snapshot())
+        if self._draft_job is not None:
+            self.after_cancel(self._draft_job)
+        self._draft_job = self.after(800, self._save_draft)
+
     def _refresh_preview(self, *args):
         """合并连续输入；同步调用方使用 _refresh_preview_now。"""
         self._cancel_refresh()
-        self._refresh_job = self.after(220, self._refresh_preview_now)
+        if self._restoring:
+            return
+        self._record_document_change()
+        if self._job_mode in ("export", "batch", "cmap"):
+            self._pending_preview = True
+            return
+        # Immediately invalidate an older preview, even during the debounce window.
+        if self._job_mode == "preview":
+            self._worker.invalidate()
+            self.preview.set_stale(True)
+        self._refresh_job = self.after(300, self._refresh_preview_async)
 
     def _refresh_preview_now(self):
         """同步验证并更新预览，成功返回 True，失败保留旧图并明确标记。"""
         self._cancel_refresh()
+        self._cancel_job(quiet=True)
         style_id = self._current_style_id()
         try:
             if style_id == "cmap_preview":
@@ -1233,13 +1521,16 @@ class App(tk.Tk):
                                show_cbar=self.show_cbar_var.get(),
                                figsize=style.get("figsize", (10, 5)))
             try:
-                self.preview.show(fig, self._build_hit_map())
+                self.preview.show(fig, self._build_hit_map(), tight=style.get("bbox_tight", True))
             except Exception:
                 import matplotlib.pyplot as plt
                 plt.close(fig)
                 raise
             if self._preview_error is not None:
                 self.status_var.set("预览已更新")
+            warnings = range_warnings(style, self._preview_data())
+            if warnings:
+                self.status_var.set("注意：" + "；".join(warnings))
             self._preview_error = None
             self.preview.set_stale(False)
             return True
@@ -1252,6 +1543,157 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # 生成
     # ------------------------------------------------------------------
+    def _render_request(self, mode):
+        style = self._current_work_style()
+        data = self._validated_data(style.get("kind"))
+        if mode != "preview" and not data:
+            raise ValueError("请先输入数据")
+        return {"mode": mode, "style": style, "data": data,
+                "title": self.param_vars["title"].get() if style.get("customizable") else "",
+                "show_cbar": self.show_cbar_var.get(), "hit_map": self._build_hit_map(),
+                "format": self.fmt_var.get()}
+
+    def _refresh_preview_async(self):
+        self._refresh_job = None
+        if self._current_style_id() == "cmap_preview":
+            self._refresh_preview_now()
+            return
+        try:
+            self._start_job(self._render_request("preview"))
+            self.preview.set_stale(True)
+        except Exception as exc:
+            self._preview_error = str(exc)
+            self.preview.set_stale(True)
+            self.status_var.set(f"预览失败：{exc}")
+
+    def _start_job(self, request):
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
+        self._cancel_refresh()
+        if request["mode"] in ("export", "batch"):
+            self._pending_preview = True
+            self.preview.set_stale(True)
+        self._job_mode = request["mode"]
+        self._job_request = copy.deepcopy(request)
+        self._job_output = self.out_var.get().strip() or self.out_dir
+        try:
+            self._worker.start(request)
+        except Exception:
+            self._cancel_job(quiet=True)
+            raise
+        self.progress.configure(value=0)
+        self.status_var.set("正在绘图…" if self._job_mode == "preview" else "正在导出，可取消…")
+        self._poll_job = self.after(60, self._poll_render_job)
+
+    def _cancel_job(self, quiet=False):
+        pending = self._pending_preview
+        self._pending_preview = False
+        self._cancel_refresh()
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
+        active = self._worker.active
+        self._worker.cancel()
+        self._job_mode = None
+        if active and not quiet:
+            self.status_var.set("任务已取消；已保留上次预览")
+        if pending and not quiet:
+            self._refresh_preview()
+
+    def _poll_render_job(self):
+        self._poll_job = None
+        message = self._worker.poll()
+        if message is None or message[0] in ("progress", "obsolete"):
+            if message and message[0] == "progress":
+                self.progress.configure(value=100 * message[1] / message[2])
+            if message and message[0] == "obsolete" and not self._worker.active:
+                self._job_mode = None
+                return
+            self._poll_job = self.after(60, self._poll_render_job)
+            return
+        mode = self._job_mode
+        try:
+            if message[0] == "error":
+                raise ValueError(message[1])
+            result = message[1]
+            if mode == "preview":
+                self.preview.show_packet(result["png"], result["hits"])
+                self.preview.set_stale(False)
+                self._preview_error = None
+                warnings = range_warnings(self._job_request["style"], self._job_request["data"])
+                self.status_var.set("注意：" + "；".join(warnings) if warnings else "预览已更新 · 滚轮缩放 / 右键平移")
+            else:
+                import shutil
+                published = []
+                try:
+                    for source, name in result["files"]:
+                        destination = auto_name(self._job_output, name, os.path.splitext(source)[1])
+                        published.append(destination)
+                        shutil.copyfile(source, destination)
+                except Exception:
+                    for path in published:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                    raise
+                self.last_output = published[-1] if published else self._job_output
+                self._preview_error = None
+                self.status_var.set(f"已生成 {len(published)} 个文件：{self.last_output}")
+            self.progress.configure(value=100)
+        except Exception as exc:
+            self._preview_error = str(exc)
+            self.preview.set_stale(True)
+            self.status_var.set(f"任务失败：{exc}")
+        finally:
+            self._job_mode = None
+        if self._pending_preview:
+            self._pending_preview = False
+            self._refresh_preview()
+
+    def generate_async(self):
+        self._commit_table_edit()
+        try:
+            if self._current_style_id() == "cmap_preview":
+                self._start_job({"mode": "cmap"})
+            else:
+                request = self._render_request("export")
+                warnings = range_warnings(request["style"], request["data"])
+                if warnings and not messagebox.askyesno("色标范围提示", "；".join(warnings) + "\n仍按当前固定色标导出？", parent=self):
+                    return
+                self._start_job(request)
+        except Exception as exc:
+            self.status_var.set(f"导出失败：{exc}")
+            messagebox.showerror("导出失败", str(exc))
+
+    def _batch_export(self, paths=None):
+        self._commit_table_edit()
+        paths = paths or filedialog.askopenfilenames(title="选择多组数据（使用当前固定色标）",
+                                                     filetypes=[("数据", "*.txt *.csv *.tsv *.json")])
+        if not paths:
+            return
+        try:
+            if self._current_style_id() == "cmap_preview":
+                raise ValueError("请先选择周期表绘图样式")
+            request = self._render_request("preview")
+            request["mode"] = "batch"
+            items = []
+            for path in paths:
+                with open(path, encoding="utf-8-sig") as stream:
+                    data = convert_data(parse_data(stream.read(), preserve_text=True), request["style"]["kind"])
+                if not data:
+                    raise ValueError(f"{path} 没有有效数据")
+                items.append((os.path.splitext(os.path.basename(path))[0], data))
+            warnings = [f"{name}: {'；'.join(range_warnings(request['style'], data))}"
+                        for name, data in items if range_warnings(request["style"], data)]
+            if warnings and not messagebox.askyesno("共用固定色标", "\n".join(warnings) + "\n仍按当前色标批量导出？", parent=self):
+                return
+            request["items"] = items
+            self._start_job(request)
+        except Exception as exc:
+            messagebox.showerror("批量导出失败", str(exc))
+
     def generate(self):
         self._commit_table_edit()
         self._cancel_refresh()
@@ -1302,11 +1744,12 @@ class App(tk.Tk):
         import copy
         import math
         work = copy.deepcopy(style)
+        work["kind"] = KIND_CHOICES.get(self.param_vars["kind"].get(), "heatmap")
         cmap_name = self.param_vars["cmap"].get().strip()
         try:
-            vmin = float(self.param_vars["vmin"].get())
-            vmax = float(self.param_vars["vmax"].get())
-            center_text = self.param_vars["vcenter"].get().strip()
+            vmin = float(self.param_vars["vmin"].get()) if work["kind"] == "heatmap" else 0.0
+            vmax = float(self.param_vars["vmax"].get()) if work["kind"] == "heatmap" else 1.0
+            center_text = self.param_vars["vcenter"].get().strip() if work["kind"] == "heatmap" else ""
             vcenter = float(center_text) if center_text else None
         except (ValueError, TypeError) as exc:
             raise ValueError("vmin / vcenter / vmax 必须是数字") from exc
@@ -1361,7 +1804,42 @@ class App(tk.Tk):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} 必须是有限正数")
             work[key] = value
+        from matplotlib.colors import is_color_like
+        for key, low, high in (("edge_width", 0, 20), ("value_dx", -2, 2),
+                               ("value_dy", -2, 2), ("label_wrap", 0, 200),
+                               ("cbar_fraction", .005, .5), ("cbar_pad", 0, .5),
+                               ("cbar_shrink", .05, 1)):
+            try:
+                value = float(self.param_vars[key].get())
+            except ValueError as exc:
+                raise ValueError(f"{key} 必须是数字") from exc
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"{key} 应在 {low}～{high} 之间")
+            work[key] = value
+        if not work["label_wrap"].is_integer():
+            raise ValueError("每行字符数必须为整数")
+        work["label_wrap"] = int(work["label_wrap"])
+        color = self.param_vars["edge_color"].get().strip()
+        if not is_color_like(color):
+            raise ValueError("边框颜色无效")
+        if work["edge_width"] > 0:
+            work["edge"] = (work["edge_width"], color)
+        work["unit"] = self.param_vars["unit"].get()
+        nodes = self.param_vars["color_nodes"].get().strip()
+        if nodes:
+            try:
+                pairs = sorted((float(row.split(":", 1)[0]), row.split(":", 1)[1].strip())
+                               for row in nodes.replace("；", ";").split(";") if row.strip())
+            except (ValueError, IndexError) as exc:
+                raise ValueError("颜色节点格式：0:#0000ff;0.5:#ffffff;1:#ff0000") from exc
+            if (len(pairs) < 2 or pairs[0][0] != 0 or pairs[-1][0] != 1 or
+                    len({p for p, c in pairs}) != len(pairs) or
+                    any(not math.isfinite(p) or not 0 <= p <= 1 or not is_color_like(c) for p, c in pairs)):
+                raise ValueError("颜色节点须从 0 到 1，位置不重复，颜色有效")
+            work["cmap"] = ("custom", pairs)
         work["cbar_orientation"] = self.param_vars["cbar_orientation"].get()
+        location = self.param_vars["cbar_location"].get()
+        work["cbar_location"] = ("bottom" if work["cbar_orientation"] == "horizontal" else "right") if location == "auto" else location
         work["cbar_label"] = self.param_vars["cbar_label"].get()
         # 标注图类型：注入 labels 专属默认键（浅灰底 + 深灰标注）
         if work["kind"] == "labels":
@@ -1400,6 +1878,46 @@ def main():
     # 打包验收可指定独立目录，实际经过应用导入、预览及三种格式导出。
     if os.environ.get("PTT_SMOKE") == "1":
         app.withdraw()
+        smoke_steps = iter(["preview", *FORMATS])
+        def finish_smoke(error=None):
+            _smoke_log("smoke:failed:" + repr(error) if error else "smoke:passed")
+            app.destroy()
+        def wait_smoke(step):
+            try:
+                if app._job_mode is not None or app._worker.active:
+                    app.after(100, lambda: wait_smoke(step))
+                    return
+                if app._preview_error:
+                    raise RuntimeError(app._preview_error)
+                if step == "preview":
+                    if app.preview._source is None:
+                        raise RuntimeError("后台预览未生成")
+                    _smoke_log("preview:passed")
+                else:
+                    if not app.last_output or not os.path.isfile(app.last_output):
+                        raise RuntimeError("后台导出未生成文件")
+                    if not app.last_output.endswith("." + step):
+                        raise RuntimeError("后台导出格式不匹配")
+                    _smoke_log("export:" + step)
+                next_smoke()
+            except Exception as exc:
+                finish_smoke(exc)
+        def next_smoke():
+            step = next(smoke_steps, None)
+            if step is None:
+                finish_smoke()
+                return
+            try:
+                app._cancel_refresh()
+                if step == "preview":
+                    app._refresh_preview_async()
+                else:
+                    app.last_output = None
+                    app.fmt_var.set(step)
+                    app.generate_async()
+                app.after(100, lambda: wait_smoke(step))
+            except Exception as exc:
+                finish_smoke(exc)
         def smoke():
             try:
                 destination = os.environ.get("PTT_SMOKE_EXPORT_DIR")
@@ -1407,18 +1925,15 @@ def main():
                     def fail(title, detail, **kwargs):
                         raise RuntimeError(f"{title}: {detail}")
                     messagebox.showerror = fail
+                    messagebox.askyesno = lambda *args, **kwargs: True
+                    app._cancel_job(quiet=True)
                     app._import_text("H,0\nC,-1\nFe,1", "打包验收")
-                    app._refresh_preview_now()
                     app.out_var.set(destination)
-                    for fmt in FORMATS:
-                        app.fmt_var.set(fmt)
-                        app.generate()
-                        _smoke_log("export:" + fmt)
-                _smoke_log("smoke:passed")
+                    next_smoke()
+                else:
+                    finish_smoke()
             except Exception as exc:
-                _smoke_log("smoke:failed:" + repr(exc))
-            finally:
-                app.destroy()
+                finish_smoke(exc)
         app.after(1500, smoke)
     _smoke_log("before_mainloop")
     app.mainloop()
@@ -1426,4 +1941,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

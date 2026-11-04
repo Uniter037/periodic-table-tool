@@ -37,7 +37,7 @@ def test_new_ui_module_is_discovered(tmp_path):
 def test_version_consistent():
     import re
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
-    assert version.group(1) == make_dist.VERSION == "1.4.0"
+    assert version.group(1) == make_dist.VERSION == "1.6.0"
 
 
 def test_fixture_provenance():
@@ -92,11 +92,11 @@ def test_examples_allowlist(tmp_path):
         (tmp_path / rel).write_text("", encoding="utf-8")
     folder = tmp_path / "examples" / "nested"
     folder.mkdir(parents=True)
-    for name in ("heatmap.txt", "labels.txt", "data.json", "data.csv", "secret.env", "script.py", "photo.png"):
+    for name in ("heatmap.txt", "labels.txt", "data.json", "data.csv", "data.tsv", "secret.env", "script.py", "photo.png"):
         (folder / name).write_text("", encoding="utf-8")
     with zipfile.ZipFile(make_dist.build_archive(tmp_path)) as archive:
         names = set(archive.namelist())
     assert {name for name in names if "/examples/" in name} == {
         "periodic-table-tool/examples/nested/" + name
-        for name in ("heatmap.txt", "labels.txt", "data.json", "data.csv")
+        for name in ("heatmap.txt", "labels.txt", "data.json", "data.csv", "data.tsv")
     }

@@ -4,11 +4,11 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "1.4.0"
+VERSION = "1.6.0"
 DIST_DIR = ROOT / "dist"
 ZIP_NAME = f"periodic-table-tool-v{VERSION}.zip"
 INCLUDE = ["main.py", "README.md", "requirements.txt", "pyproject.toml",
-           "make_dist.py", "build_exe.py"]
+           "make_dist.py", "build_exe.py", "verify_exe.py"]
 
 
 def source_files(root=ROOT):
@@ -27,7 +27,7 @@ def source_files(root=ROOT):
     files.update(p.relative_to(root).as_posix()
                  for p in (root / "examples").rglob("*")
                  if p.is_file() and not p.is_symlink()
-                 and p.suffix.lower() in {".txt", ".json", ".csv"}
+                 and p.suffix.lower() in {".txt", ".json", ".csv", ".tsv"}
                  and "__pycache__" not in p.parts)
     for rel in sorted(files):
         if not (root / rel).is_file():

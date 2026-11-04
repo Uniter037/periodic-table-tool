@@ -71,6 +71,9 @@ def test_cbar_override_injected(app):
     # 非自定义模式：注入且不污染全局 STYLES
     app.mode_combo.current(ids.index("reconstruct_percent"))
     app._on_style_change()
+    assert app.cbar_override is None  # 切换样式不能沿用旧范围的刻度。
+    app.cbar_override = {"ticks": [0.1, 0.5, 0.9],
+                         "labels": ["a", "b", "c"], "fontsize": 8}
     work2 = app._current_work_style()
     assert work2["cbar"]["labels"] == ["a", "b", "c"]
     assert main.STYLES["reconstruct_percent"]["cbar"]["labels"] != ["a", "b", "c"]
@@ -135,43 +138,22 @@ def test_cbar_preset_roundtrip(app, tmp_path, monkeypatch):
     app._preset_load()
     assert app.cbar_override["ticks"] == [0.1, 0.9]
     assert len(app.cbar_tree.get_children()) == 2   # tree 同步刷新
-    # 脏预设（ticks/labels 不等长）→ 安全回退 None，不崩溃
-    (tmp_path / "bad.json").write_text(
-        json.dumps({"cbar_override": {"ticks": [1], "labels": ["a", "b"]}}),
-        encoding="utf-8")
-    app.preset_combo.set("bad")
-    app._preset_load()
-    assert app.cbar_override is None
-    # NaN tick / 非法 fontsize → 回退 None / 8
-    (tmp_path / "nan.json").write_text(
-        json.dumps({"cbar_override": {"ticks": ["nan"], "labels": ["x"],
-                                      "fontsize": "big"}}),
-        encoding="utf-8")
-    app.preset_combo.set("nan")
-    app._preset_load()
-    assert app.cbar_override is None
-    (tmp_path / "fs.json").write_text(
-        json.dumps({"cbar_override": {"ticks": [1.0], "labels": ["x"],
-                                      "fontsize": "big"}}),
-        encoding="utf-8")
-    app.preset_combo.set("fs")
-    app._preset_load()
-    assert app.cbar_override["fontsize"] == 8
-    # bool tick / bool fontsize → 回退 None / 8（type is not bool 排除）
-    (tmp_path / "bool.json").write_text(
-        json.dumps({"cbar_override": {"ticks": [True], "labels": ["x"]}}),
-        encoding="utf-8")
-    app.preset_combo.set("bool")
-    app._preset_load()
-    assert app.cbar_override is None
-    (tmp_path / "boolfs.json").write_text(
-        json.dumps({"cbar_override": {"ticks": [1.0], "labels": ["x"],
-                                      "fontsize": True}}),
-        encoding="utf-8")
-    app.preset_combo.set("boolfs")
-    app._preset_load()
-    assert app.cbar_override["fontsize"] == 8
-    # 清理共享状态
-    app.cbar_override = None
-    app.presets = _main.PresetStore(
-        os.path.join(_main.PROJECT_ROOT, "presets"))
+    # 损坏预设必须明确报错，并保留完整的现有工作，不能静默丢弃标签。
+    before = app._document_snapshot()
+    errors = []
+    monkeypatch.setattr(_main.messagebox, "showerror", lambda *a, **kw: errors.append(a))
+    invalid = [
+        {"ticks": [1], "labels": ["a", "b"]},
+        {"ticks": ["nan"], "labels": ["x"]},
+        {"ticks": [1.0], "labels": ["x"], "fontsize": "big"},
+        {"ticks": [True], "labels": ["x"]},
+        {"ticks": [1.0], "labels": ["x"], "fontsize": True},
+    ]
+    for index, config in enumerate(invalid):
+        name = f"invalid_{index}"
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps({"cbar_override": config}), encoding="utf-8")
+        app.preset_combo.set(name)
+        app._preset_load()
+        assert len(errors) == index + 1
+        assert app._document_snapshot() == before

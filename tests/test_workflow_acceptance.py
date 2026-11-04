@@ -65,7 +65,8 @@ def test_gui_import_preview_and_export(app, monkeypatch, tmp_path):
     source = Path(__file__).resolve().parents[1] / 'examples/heatmap.txt'
     monkeypatch.setattr(main.filedialog, 'askopenfilename', lambda **kw: str(source))
     app._import_file()
-    assert app.data['H'] == 0
+    assert app.data['H'].strip() == '0'
+    assert app._validated_data('heatmap')['H'] == 0
     app.param_vars['vmin'].set('-1.2')
     app.param_vars['vmax'].set('2.8')
     app.param_vars['vcenter'].set('')

@@ -13,11 +13,12 @@ import matplotlib as mpl
 import matplotlib.cm as cm
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm
+from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm, is_color_like
 
-from .dataio import _coerce
+from .dataio import _coerce, convert_data
 from .fonts import apply_text_fallbacks
 from .ptable import build_elements, xy_bounds_for, CELL_STEP
+from .scientific import color_nodes, validate_render_options
 
 # ---------------------------------------------------------------------------
 # 样式定义
@@ -339,8 +340,13 @@ CMAP_PREVIEW_LIST = [
 def _make_cmap(style):
     """根据样式配置创建颜色映射对象。"""
     spec = style["cmap"]
-    if isinstance(spec, tuple) and spec[0] == "custom":
-        cmap = LinearSegmentedColormap.from_list("custom_cmap", spec[1])
+    if isinstance(spec, (tuple, list)) and spec and spec[0] == "custom":
+        if len(spec) != 2 or not isinstance(spec[1], (list, tuple)) or len(spec[1]) < 2:
+            raise ValueError("自定义颜色映射至少需要两个颜色")
+        colors = spec[1]
+        if not all(is_color_like(color) for color in colors):
+            colors = color_nodes(colors)
+        cmap = LinearSegmentedColormap.from_list("custom_cmap", colors)
     else:
         # 校验：仅接受已注册的颜色映射名称。
         # matplotlib 3.6+ 的 ColormapRegistry 会对未命中名称尝试按
@@ -360,6 +366,15 @@ def _make_norm(style):
     spec = style["norm"]
     if spec is None:
         return None
+    if (not isinstance(spec, (tuple, list)) or not spec or
+            spec[0] not in ("twoslope", "normalize") or
+            len(spec) != (4 if spec[0] == "twoslope" else 3)):
+        raise ValueError(f"归一化格式无效: {spec!r}")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+           not math.isfinite(v) for v in spec[1:]):
+        raise ValueError("归一化范围必须为有限数字")
+    if any(a >= b for a, b in zip(spec[1:], spec[2:])):
+        raise ValueError("归一化范围必须严格递增")
     if spec[0] == "twoslope":
         _, vmin, vcenter, vmax = spec
         return TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
@@ -379,6 +394,8 @@ def _fmt_value(value, fmt):
         return f"{value:.3f}"
     if fmt == "4f":
         return f"{value:.4f}"
+    if fmt == "scientific":
+        return f"{value:.3e}"
     return str(value)   # raw / g
 
 
@@ -402,8 +419,13 @@ def render_table(style: dict, data: dict, title: str = None,
     Reconstructed marker rows follow number/symbol/value controls respectively.
     Existing cbar={ticks, labels, fontsize} remains supported in both directions.
     """
+    custom = style.get("id") == "custom" or style.get("corrected", False)
+    if custom:
+        style = validate_render_options(style)
+        data = convert_data(data, style["kind"])
     for value in data.values():
-        _coerce(value)  # Direct callers also must reject NaN/Inf.
+        if style.get("kind") != "labels" or not isinstance(value, str):
+            _coerce(value)  # Text annotations are not numerical measurements.
     layout = style["layout"]
     elements = build_elements(layout, data)
     xy_bounds = xy_bounds_for(layout)
@@ -412,32 +434,24 @@ def render_table(style: dict, data: dict, title: str = None,
         # 色图预览器是独立功能（render_cmap_preview），不渲染周期表
         raise ValueError("色图预览器模式无需渲染周期表（使用 render_cmap_preview）")
 
-    custom = style.get("id") == "custom"
-    if custom:
-        for key in ("symbol_fs", "number_fs", "value_fs"):
-            if key in style:
-                size = style[key]
-                if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or size <= 0:
-                    raise ValueError(f"{key} 必须是有限正数")
-        for key in ("show_symbol", "show_number", "show_value", "transparent"):
-            if key in style and not isinstance(style[key], bool):
-                raise ValueError(f"{key} 必须为 bool")
-        if style.get("cbar_orientation", "vertical") not in ("vertical", "horizontal"):
-            raise ValueError("cbar_orientation 必须为 vertical 或 horizontal")
-        if style.get("edge") is not None:
-            width, color = style["edge"]
-            if not math.isfinite(width) or width < 0:
-                raise ValueError("edge 线宽必须是有限非负数")
-
     fig, ax = plt.subplots(figsize=figsize)
     try:
-        def draw_text(role, *args, **kwargs):
+        def draw_text(role, *args, measurement=True, **kwargs):
             if custom:
                 if not style.get(f"show_{role}", True):
                     return None
                 kwargs["fontsize"] = style.get(f"{role}_fs", kwargs.get("fontsize"))
                 if role == "value" and "label_color" in style:
                     kwargs["color"] = style["label_color"]
+                if role == "value" and measurement and len(args) >= 3 and args[2] is not None:
+                    import textwrap
+                    x, y, value, *rest = args
+                    value = str(value) + (style.get("unit", "") if kind == "heatmap" else "")
+                    wrap = int(style.get("label_wrap", 0))
+                    if wrap > 0:
+                        value = "\n".join(textwrap.fill(line, wrap) for line in value.split("\n"))
+                    args = (x + style.get("value_dx", 0),
+                            y + style.get("value_dy", 0), value, *rest)
             return ax.text(*args, **kwargs)
 
         ax.set_xlim(0, xy_bounds[0])
@@ -454,7 +468,19 @@ def render_table(style: dict, data: dict, title: str = None,
             if show_cbar:
                 cbar_style = style.get("cbar_style", "standard")
                 orientation = style.get("cbar_orientation", "vertical") if custom else "vertical"
-                if cbar_style == "plain":
+                if custom and any(k in style for k in ("cbar_fraction", "cbar_pad", "cbar_shrink", "cbar_location")):
+                    location = style.get("cbar_location", "bottom" if orientation == "horizontal" else "right")
+                    if location not in ("left", "right", "top", "bottom"):
+                        raise ValueError("颜色条位置无效")
+                    cbar = fig.colorbar(mappable, ax=ax, location=location,
+                                        fraction=style.get("cbar_fraction", .046),
+                                        pad=style.get("cbar_pad", .04),
+                                        shrink=style.get("cbar_shrink", 1.0))
+                    # Let fraction set thickness and shrink set length independently.
+                    # The default fixed box aspect can otherwise cancel shrink.
+                    cbar.ax.set_box_aspect(None)
+                    orientation = "horizontal" if location in ("top", "bottom") else "vertical"
+                elif cbar_style == "plain":
                     # 图1：plt.colorbar(cmmapable, drawedges=False)
                     # （matplotlib 3.11 起需显式 ax，否则报错）
                     cbar = fig.colorbar(mappable, ax=ax, drawedges=False, orientation=orientation)
@@ -487,7 +513,7 @@ def render_table(style: dict, data: dict, title: str = None,
         for elem in elements:
             num, symbol, group, period, value = elem
             has_value = (num is not None and symbol in data and value is not None) \
-                if style.get("id") == "custom" else bool(value)
+                if custom else bool(value)
             if group is None:
                 continue
 
@@ -552,14 +578,15 @@ def render_table(style: dict, data: dict, title: str = None,
                     draw_text("symbol", x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
                             ha="center", color="black", **text_props)
                     draw_text("value", x + 0.5, y + 0.12, line3, fontsize=7,
-                            color=style.get("label_color", "#666666"), ha="center", **text_props)
+                            color=style.get("label_color", "#666666"), ha="center",
+                            measurement=False, **text_props)
                 else:
                     draw_text("number", x + 0.4, y + 0.8, line1, fontsize=6, ha="center",
                             color="black", **text_props)
                     draw_text("symbol", x + 0.5, y + 0.5, line2, fontsize=9, weight="bold",
                             ha="center", color="black", **text_props)
                     draw_text("value", x + 0.5, y + 0.12, line3, fontsize=6, ha="center",
-                            color="black", **text_props)
+                            color="black", measurement=False, **text_props)
             else:
                 draw_text("symbol", x + 0.5, y + 0.5, symbol, fontsize=9, weight="bold",
                         ha="center", color=base_color, **text_props)

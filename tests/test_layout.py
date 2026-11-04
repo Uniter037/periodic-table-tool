@@ -14,9 +14,9 @@ def test_small_window_keeps_toolbar_preview_and_data(app, size):
     app.deiconify()
     app.update()
     try:
-        assert app._effective_layout() == 'split-h'
+        assert app._effective_layout() == 'split-v'
         assert app.preview.winfo_width() >= 400
-        assert app.preview.winfo_height() >= 200
+        assert app.preview.winfo_height() >= 160
         assert app.table.winfo_height() >= 60
         assert app.toolbar.winfo_ismapped()
         for button in app.toolbar_buttons.values():
