@@ -4,7 +4,7 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 DIST_DIR = ROOT / "dist"
 ZIP_NAME = f"periodic-table-tool-v{VERSION}.zip"
 INCLUDE = ["main.py", "README.md", "requirements.txt", "pyproject.toml",
@@ -15,11 +15,12 @@ def source_files(root=ROOT):
     """动态发现运行时模块及测试基准，排除缓存与构建产物。"""
     root = Path(root)
     files = set(INCLUDE)
-    for package in ("core", "ui", "tests"):
+    for package in ("core", "ui", "application", "infrastructure", "domain", "tests"):
         files.update(p.relative_to(root).as_posix()
                      for p in (root / package).rglob("*.py")
                      if "__pycache__" not in p.parts)
-    for folder in ("tests/fixtures",):
+    for folder in ("tests/fixtures", "docs/workbench"):
+
         files.update(p.relative_to(root).as_posix()
                      for p in (root / folder).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts

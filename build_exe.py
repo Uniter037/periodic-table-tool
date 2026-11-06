@@ -35,7 +35,7 @@ def pyinstaller_command(python):
                "--hidden-import", "matplotlib.backends.backend_pdf",
                "--hidden-import", "PIL.ImageTk",
                "--hidden-import", "PIL._imagingtk"]
-    for package in ("core", "ui"):
+    for package in ("core", "ui", "application", "infrastructure", "domain"):
         if (ROOT / package).is_dir():
             command.extend(["--collect-submodules", package])
     command.append(str(ROOT / "main.py"))

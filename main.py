@@ -60,7 +60,9 @@ from core.elements_data import ALL_SYMBOLS
 from core.dataio import convert_data
 from core.document import History, read_document, write_document, user_directory
 from core.scientific import corrected_style, colorbar_config, range_warnings
+from application.dataset_collection import DatasetCollection
 from core.jobs import RenderJob
+from infrastructure.diagnostics import DiagnosticService, DiagnosticSettings
 from ui.preview import PreviewCanvas
 from ui.scrolling import ScrollableFrame
 _smoke_log("import:after_core")
@@ -223,7 +225,7 @@ class DataTable(tk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工作台 · v1.6.0")
+        self.title("元素周期表绘图工作台 · v1.7.0")
         self.geometry("1180x760")
         self.minsize(800, 560)
         self._refresh_job = None
@@ -232,6 +234,8 @@ class App(tk.Tk):
 
         self.out_dir = os.path.join(PROJECT_ROOT, "output")
         self.last_output = None
+        self.excel_collection = DatasetCollection()
+        self._excel_attached = False
         self.data = {}                       # 统一数据源 {符号: 值}
         self.custom_colors = list(DEFAULT_COLORS)
         self.user_dir = user_directory()
@@ -260,6 +264,14 @@ class App(tk.Tk):
         self._app_font = None
         self.cbar_override = None            # 颜色条标注自定义（None=用样式默认）
         self._load_config()
+        log_cfg = self._config.get("diagnostics", {})
+        if not isinstance(log_cfg, dict):
+            log_cfg = {}
+        self.log_enabled = tk.BooleanVar(value=log_cfg.get("enabled", True) is True)
+        level = log_cfg.get("level", "INFO")
+        self.log_level = tk.StringVar(value=level if level in ("DEBUG", "INFO", "WARNING") else "INFO")
+        self.diagnostics = DiagnosticService(settings=DiagnosticSettings(enabled=self.log_enabled.get(), level=self.log_level.get()))
+        self.diagnostics.record("INFO", "app.started", "应用已启动")
         self._restore_geometry()
 
         self._build_ui()
@@ -275,6 +287,44 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
+    def _configure_diagnostics(self):
+        self.diagnostics.configure(DiagnosticSettings(enabled=self.log_enabled.get(), level=self.log_level.get()))
+        self._save_config()
+
+    def _start_diagnostic_session(self):
+        self.diagnostics.start_session(30)
+        self.status_var.set("临时详细日志已开启，30分钟后恢复原设置；手动修改日志设置将结束临时排错。")
+
+    def _stop_diagnostic_session(self):
+        self.diagnostics.stop_session()
+        self.status_var.set("临时排错已结束，已恢复日志设置。")
+
+    def _export_diagnostics(self):
+        directory = filedialog.askdirectory(title="选择诊断包保存目录（仅含本次脱敏日志与环境信息，不含Excel数据）")
+        if not directory:
+            return
+        try:
+            path = self.diagnostics.export_bundle(None, directory)
+        except Exception as exc:
+            messagebox.showerror("诊断包导出失败", str(exc))
+            return
+        self.status_var.set(f"诊断包已保存：{path}")
+
+    def _show_diagnostics(self):
+        window = tk.Toplevel(self)
+        window.title("本次运行日志")
+        window.geometry("760x420")
+        text = tk.Text(window, wrap="word")
+        text.pack(fill="both", expand=True)
+        def refresh():
+            page = self.diagnostics.query(limit=300)
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.insert("end", "\n".join(json.dumps(row, ensure_ascii=False) for row in page.entries) or "本次运行暂无日志。")
+            text.configure(state="disabled")
+        ttk.Button(window, text="刷新", command=refresh).pack()
+        refresh()
+
     def _migrate_user_files(self):
         """Copy only absent legacy user files; never overwrite an edited preset."""
         import shutil
@@ -336,6 +386,7 @@ class App(tk.Tk):
             "geometry": self.geometry(),
             "scale": self.scale_mode,
             "preview_ratio": self.preview_ratio,
+            "diagnostics": {"enabled": self.log_enabled.get(), "level": self.log_level.get()},
         }
         try:
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -357,6 +408,8 @@ class App(tk.Tk):
         if self._ratio_job is not None:
             self.after_cancel(self._ratio_job)
             self._ratio_job = None
+        if getattr(self, "diagnostics", None) is not None:
+            self.diagnostics.close()
         super().destroy()
 
     def _on_close(self):
@@ -503,6 +556,7 @@ class App(tk.Tk):
         project_menu.add_separator()
         project_menu.add_command(label="撤销  Ctrl+Z", command=self._undo)
         project_menu.add_command(label="重做  Ctrl+Y", command=self._redo)
+        project_menu.add_command(label="切换 Excel 数据组", command=self._show_excel_groups)
         menubar.add_cascade(label="项目", menu=project_menu)
         self.bind("<Control-z>", lambda e: self._undo())
         self.bind("<Control-y>", lambda e: self._redo())
@@ -526,6 +580,16 @@ class App(tk.Tk):
         view_menu.add_cascade(label="预览区域大小（也可拖动分隔条）", menu=ratio_menu)
         view_menu.add_command(label="预览适合窗口（滚轮缩放，右键拖动）", command=lambda: self.preview.fit())
         menubar.add_cascade(label="视图", menu=view_menu)
+        logs_menu = tk.Menu(menubar, tearoff=0)
+        logs_menu.add_checkbutton(label="记录日志", variable=self.log_enabled, command=self._configure_diagnostics)
+        for label, value in (("精简", "WARNING"), ("标准", "INFO"), ("详细", "DEBUG")):
+            logs_menu.add_radiobutton(label=label, variable=self.log_level, value=value, command=self._configure_diagnostics)
+        logs_menu.add_separator()
+        logs_menu.add_command(label="查看本次日志", command=self._show_diagnostics)
+        logs_menu.add_command(label="临时详细排错（30分钟）", command=self._start_diagnostic_session)
+        logs_menu.add_command(label="结束临时排错", command=self._stop_diagnostic_session)
+        logs_menu.add_command(label="导出本次诊断包", command=self._export_diagnostics)
+        menubar.add_cascade(label="日志与排错", menu=logs_menu)
         self.config(menu=menubar)
 
         # 工具栏与状态栏独立于可滚动内容，始终保持可见。
@@ -942,14 +1006,22 @@ class App(tk.Tk):
         current = copy.deepcopy(self._current_preset_payload())
         states = copy.deepcopy(self._style_states)
         states[current["mode_id"]] = current
-        return {"schema": 1, "current": current, "styles": states}
+        self._stash_excel_group()
+        return {"schema": 1, "current": current, "styles": states,
+                "excel_collection": self.excel_collection.snapshot(), "excel_attached": self._excel_attached}
 
     def _restore_document(self, snapshot):
+        collection = DatasetCollection.from_snapshot(snapshot["excel_collection"]) if "excel_collection" in snapshot else DatasetCollection()
+        attached = snapshot.get("excel_attached", False)
+        if type(attached) is not bool or (attached and collection.active_dataset_id is None):
+            raise ValueError("Excel数据组关联无效")
         payload = snapshot["current"]
         for item in [payload, *snapshot["styles"].values()]:
             self._validate_payload(item)
         self._restoring = True
         try:
+            self.excel_collection = collection
+            self._excel_attached = attached
             self._style_states = copy.deepcopy(snapshot["styles"])
             self._style_states[payload["mode_id"]] = copy.deepcopy(payload)
             self._active_style = None
@@ -1068,6 +1140,8 @@ class App(tk.Tk):
         self._refresh_preview()
 
     def _load_demo(self):
+        self._stash_excel_group()
+        self._excel_attached = False
         style_id = self._current_style_id()
         data = demo_data(style_id)
         if not data:
@@ -1081,15 +1155,69 @@ class App(tk.Tk):
     def _import_file(self):
         path = filedialog.askopenfilename(
             title="选择数据文件",
-            filetypes=[("数据文件", "*.txt *.csv *.tsv *.json"), ("所有文件", "*.*")])
+            filetypes=[("数据文件", "*.xlsx *.txt *.csv *.tsv *.json"), ("所有文件", "*.*")])
         if not path:
             return
         try:
+            if path.lower().endswith(".xlsx"):
+                self._import_excel(path)
+                return
             with open(path, "r", encoding="utf-8-sig") as fh:
                 text = fh.read()
             self._import_text(text, os.path.basename(path))
         except Exception as exc:
             messagebox.showerror("导入失败", str(exc))
+
+    def _import_excel(self, path):
+        from application.excel_import import ExcelImportService, legacy_data
+        from ui.import_wizard import ExcelImportDialog
+        service = ExcelImportService(path)
+        def choose(result):
+            candidate = DatasetCollection.from_snapshot(self.excel_collection.snapshot())
+            ids = candidate.append(result)
+            self._stash_excel_group()
+            if self._excel_attached:
+                candidate.set_manual_data(self.data, self.excel_collection.active_dataset_id)
+            self.excel_collection = candidate
+            self._select_excel_group(ids[0])
+            self._show_excel_groups()
+        ExcelImportDialog(self, service.sheets, service.preview, choose)
+
+    def _stash_excel_group(self):
+        if getattr(self, "_excel_attached", False) and not self._restoring:
+            self.excel_collection.set_manual_data(self.data)
+
+    def _select_excel_group(self, dataset_id):
+        self._commit_table_edit()
+        self._stash_excel_group()
+        self.excel_collection.select(dataset_id)
+        self.data = self.excel_collection.effective_data()
+        self.table.set_data(self.data)
+        self._excel_attached = True
+        self._refresh_preview()
+
+    def _show_excel_groups(self):
+        snapshot = self.excel_collection.snapshot()
+        datasets = snapshot["datasets"]
+        if not datasets:
+            self.status_var.set("请先导入Excel数据组。")
+            return
+        labels = {c["id"]: c["label"] for c in snapshot["conditions"]}
+        metrics = {m["id"]: m["name"] for m in snapshot["metrics"]}
+        window = tk.Toplevel(self)
+        window.title("选择绘图数据组")
+        window.geometry("460x300")
+        choices = tk.Listbox(window, exportselection=False)
+        choices.pack(fill="both", expand=True, padx=10, pady=8)
+        for index, data in enumerate(datasets):
+            choices.insert("end", f'{metrics[data["metric_id"]]} · {labels[data["condition_id"]]}')
+            if data["id"] == snapshot["active_dataset_id"]:
+                choices.selection_set(index)
+        def apply():
+            if choices.curselection():
+                self._select_excel_group(datasets[choices.curselection()[0]]["id"])
+                window.destroy()
+        ttk.Button(window, text="载入当前图", command=apply).pack(pady=8)
 
     def _import_text(self, text, source="粘贴数据"):
         """文件与粘贴的共同入口；解析失败时保持原数据不变。"""
@@ -1099,6 +1227,8 @@ class App(tk.Tk):
         unknown = [s for s in data if s not in SYMBOLS]
         if unknown:
             raise ValueError("未知元素：" + ", ".join(unknown) + "；请修正后再导入")
+        self._stash_excel_group()
+        self._excel_attached = False
         self.data = data
         self.table.set_data(data)
         self.status_var.set(f"已从 {source} 导入 {len(data)} 条数据")
@@ -1418,7 +1548,9 @@ class App(tk.Tk):
             payload.setdefault("mode_id", "custom")
             self._validate_payload(payload)
             snapshot = {"schema": 1, "current": payload,
-                        "styles": copy.deepcopy(self._style_states)}
+                        "styles": copy.deepcopy(self._style_states),
+                        "excel_collection": before["excel_collection"],
+                        "excel_attached": False}
             self._restore_document(snapshot)
             self.status_var.set(f"已加载预设 {name}")
         except Exception as exc:
@@ -1567,6 +1699,7 @@ class App(tk.Tk):
             self.status_var.set(f"预览失败：{exc}")
 
     def _start_job(self, request):
+        self.diagnostics.record("INFO", "render.requested", "提交绘图任务", module="render")
         if self._poll_job is not None:
             self.after_cancel(self._poll_job)
             self._poll_job = None

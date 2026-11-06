@@ -19,7 +19,7 @@ def test_archive_contents_and_reproducibility(tmp_path):
     with zipfile.ZipFile(first) as archive:
         files = {name.removeprefix("periodic-table-tool/") for name in archive.namelist()}
         assert set(make_dist.INCLUDE) <= files
-        for package in ("core", "ui"):
+        for package in ("core", "ui", "application", "infrastructure", "domain"):
             assert {p.relative_to(ROOT).as_posix() for p in (ROOT / package).rglob("*.py")} <= files
         assert len([p for p in files if p.startswith("tests/fixtures/originals/") and p.endswith(".py")]) == 12
         assert not any("__pycache__" in p for p in files)
@@ -37,7 +37,7 @@ def test_new_ui_module_is_discovered(tmp_path):
 def test_version_consistent():
     import re
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
-    assert version.group(1) == make_dist.VERSION == "1.6.0"
+    assert version.group(1) == make_dist.VERSION == "1.7.0"
 
 
 def test_fixture_provenance():
@@ -65,7 +65,7 @@ def test_wheel_install_from_source_archive(tmp_path):
     with zipfile.ZipFile(wheel) as zf:
         names = set(zf.namelist())
         assert "main.py" in names
-        for package in ("core", "ui"):
+        for package in ("core", "ui", "application", "infrastructure", "domain"):
             assert {p.relative_to(source).as_posix() for p in (source / package).rglob("*.py")} <= names
         assert not any(p.startswith("tests/") for p in names)
         zf.extractall(tmp_path / "installed")
@@ -81,7 +81,7 @@ def test_exe_build_collects_packages():
     assert "matplotlib.backends.backend_svg" in command
     assert "matplotlib.backends.backend_pdf" in command
     assert "PIL.ImageTk" in command and "PIL._imagingtk" in command
-    for package in ("core", "ui"):
+    for package in ("core", "ui", "application", "infrastructure", "domain"):
         if (ROOT / package).is_dir():
             assert package in command
     assert all("==" in dep for dep in build_exe.REQUIREMENTS)
