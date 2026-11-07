@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "action": "create",
+  "project": "output/agent-demo.ptproj",
+  "patch": {
+    "mode_id": "custom",
+    "params": {
+      "kind": "热力图",
+      "fmt": "四位小数",
+      "rounding": "十进制四舍五入",
+      "vmin": "0",
+      "vcenter": "0.5",
+      "vmax": "1"
+    },
+    "data": {
+      "Fe": 0.7,
+      "Cu": 0.73925,
+      "Ni": 0.5,
+      "H": 0
+    }
+  }
+}

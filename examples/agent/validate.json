@@ -1,0 +1,24 @@
+{
+  "api_version": 1,
+  "project": "output/agent-demo.ptproj",
+  "patch": {
+    "params": {
+      "fmt": "四位小数",
+      "rounding": "十进制四舍五入"
+    },
+    "data": {
+      "Fe": 0.75,
+      "H": null
+    },
+    "element_overrides": {
+      "Cu": {
+        "show_value": false,
+        "show_color": true,
+        "include_in_range": false,
+        "value_dx": 0.05,
+        "value_dy": 0
+      }
+    }
+  },
+  "action": "validate"
+}

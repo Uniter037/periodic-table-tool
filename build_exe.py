@@ -19,6 +19,7 @@ REQUIREMENTS = (
     "cycler==0.12.1", "fonttools==4.63.0", "kiwisolver==1.5.0",
     "pillow==12.3.0", "pyparsing==3.3.2", "python-dateutil==2.9.0.post0",
     "six==1.17.0",
+    "resvg_py==0.5.0",
 )
 
 
@@ -34,7 +35,8 @@ def pyinstaller_command(python):
                "--hidden-import", "matplotlib.backends.backend_svg",
                "--hidden-import", "matplotlib.backends.backend_pdf",
                "--hidden-import", "PIL.ImageTk",
-               "--hidden-import", "PIL._imagingtk"]
+               "--hidden-import", "PIL._imagingtk",
+               "--collect-all", "resvg_py"]
     for package in ("core", "ui", "application", "infrastructure", "domain"):
         if (ROOT / package).is_dir():
             command.extend(["--collect-submodules", package])

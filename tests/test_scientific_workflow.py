@@ -132,10 +132,12 @@ def _custom_work(**overrides):
         edge_width="0", edge_color="#123456", value_dx=".2", value_dy="-.1",
         label_wrap="0", unit=" kg", color_nodes="1:#ff0000;0:#0000ff;0.2:#ffffff",
         cbar_orientation="vertical", cbar_location="top", cbar_fraction=".1",
-        cbar_pad=".08", cbar_shrink=".7", cbar_label="Mass")
+        cbar_pad=".08", cbar_shrink=".7", cbar_label="Mass",
+        crop_mode="固定画幅", rounding="十进制四舍五入", margins="", cbar_box="")
     params.update(overrides)
     fake = SimpleNamespace(param_vars={k: SimpleNamespace(get=lambda v=v: v) for k, v in params.items()},
-                           bool_vars={}, custom_colors=[])
+                           bool_vars={}, custom_colors=[], element_overrides={},
+                           compat_var=SimpleNamespace(get=lambda: False))
     base = deepcopy(STYLES["custom"])
     work = main.App._apply_custom_params(fake, base)
     assert base == STYLES["custom"]

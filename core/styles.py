@@ -384,8 +384,25 @@ def _make_norm(style):
     raise ValueError(f"未知归一化: {spec[0]}")
 
 
-def _fmt_value(value, fmt):
+def _fmt_value(value, fmt, rounding="legacy"):
     """按样式格式化数值文本。"""
+    if rounding == "half_up" and fmt in ("percent2", "2f", "3f", "4f", "scientific"):
+        from decimal import Decimal, ROUND_HALF_UP, localcontext
+        number = Decimal(str(value))
+        with localcontext() as ctx:
+            ctx.prec = max(32, len(number.as_tuple().digits) + abs(number.adjusted()) + 10)
+            if fmt == "percent2":
+                number *= 100
+            places = {"percent2": 2, "2f": 2, "3f": 3, "4f": 4}.get(fmt, 3)
+            if fmt == "scientific":
+                exponent = number.adjusted() if number else 0
+                mantissa = number.scaleb(-exponent).quantize(Decimal(".001"), rounding=ROUND_HALF_UP)
+                if abs(mantissa) >= 10:
+                    mantissa /= 10
+                    exponent += 1
+                return f"{mantissa:.3f}e{exponent:+03d}"
+            number = number.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+            return f"{number:.{places}f}" + ("%" if fmt == "percent2" else "")
     if fmt == "percent2":
         return f"{value * 100:.2f}%"
     if fmt == "2f":
@@ -417,6 +434,12 @@ def render_table(style: dict, data: dict, title: str = None,
     cbar_orientation="vertical" or "horizontal", cbar_label="",
     transparent=False (figure/axes background only; cell colors unchanged).
     Reconstructed marker rows follow number/symbol/value controls respectively.
+    rounding="half_up" (scientific default) or "legacy" controls value formatting.
+    element_overrides={symbol: {show_value, show_color, include_in_range,
+    value_dx, value_dy}} preserves measurements; offsets add to global offsets.
+    margins=(left, bottom, right, top) sets subplot bounds in Figure fractions.
+    cbar_box=(x, y, width, height) sets exact Figure bounds without stealing
+    space from the main axes. None leaves automatic layout active.
     Existing cbar={ticks, labels, fontsize} remains supported in both directions.
     """
     custom = style.get("id") == "custom" or style.get("corrected", False)
@@ -428,6 +451,10 @@ def render_table(style: dict, data: dict, title: str = None,
             _coerce(value)  # Text annotations are not numerical measurements.
     layout = style["layout"]
     elements = build_elements(layout, data)
+    if custom and layout == "reconstructed":
+        for elem in elements:
+            if isinstance(elem[1], tuple) and elem[1][1] == "Ac~Lr":
+                elem[1] = ("89~103", *elem[1][1:])
     xy_bounds = xy_bounds_for(layout)
     kind = style["kind"]
     if kind == "cmap":
@@ -441,6 +468,8 @@ def render_table(style: dict, data: dict, title: str = None,
                 if not style.get(f"show_{role}", True):
                     return None
                 kwargs["fontsize"] = style.get(f"{role}_fs", kwargs.get("fontsize"))
+                if role == "value" and measurement and not element_edit.get("show_value", True):
+                    return None
                 if role == "value" and "label_color" in style:
                     kwargs["color"] = style["label_color"]
                 if role == "value" and measurement and len(args) >= 3 and args[2] is not None:
@@ -450,8 +479,8 @@ def render_table(style: dict, data: dict, title: str = None,
                     wrap = int(style.get("label_wrap", 0))
                     if wrap > 0:
                         value = "\n".join(textwrap.fill(line, wrap) for line in value.split("\n"))
-                    args = (x + style.get("value_dx", 0),
-                            y + style.get("value_dy", 0), value, *rest)
+                    args = (x + style.get("value_dx", 0) + element_edit.get("value_dx", 0),
+                            y + style.get("value_dy", 0) + element_edit.get("value_dy", 0), value, *rest)
             return ax.text(*args, **kwargs)
 
         ax.set_xlim(0, xy_bounds[0])
@@ -468,7 +497,22 @@ def render_table(style: dict, data: dict, title: str = None,
             if show_cbar:
                 cbar_style = style.get("cbar_style", "standard")
                 orientation = style.get("cbar_orientation", "vertical") if custom else "vertical"
-                if custom and any(k in style for k in ("cbar_fraction", "cbar_pad", "cbar_shrink", "cbar_location")):
+                if custom and style.get("cbar_box") is not None:
+                    location = style.get("cbar_location")
+                    if location:
+                        orientation = "horizontal" if location in ("top", "bottom") else "vertical"
+                    if style.get("margins") is not None:
+                        cax = fig.add_axes(style["cbar_box"])
+                        cax.set_in_layout(False)
+                        cbar = fig.colorbar(mappable, cax=cax, orientation=orientation)
+                    else:
+                        # Reserve the same main-axes space as automatic placement.
+                        location = location or ("bottom" if orientation == "horizontal" else "right")
+                        cbar = fig.colorbar(mappable, ax=ax, location=location,
+                                            fraction=style.get("cbar_fraction", .046),
+                                            pad=style.get("cbar_pad", .04),
+                                            shrink=style.get("cbar_shrink", 1.0))
+                elif custom and any(k in style for k in ("cbar_fraction", "cbar_pad", "cbar_shrink", "cbar_location")):
                     location = style.get("cbar_location", "bottom" if orientation == "horizontal" else "right")
                     if location not in ("left", "right", "top", "bottom"):
                         raise ValueError("颜色条位置无效")
@@ -512,6 +556,7 @@ def render_table(style: dict, data: dict, title: str = None,
         # ---- 绘制格子与文本 ----
         for elem in elements:
             num, symbol, group, period, value = elem
+            element_edit = style.get("element_overrides", {}).get(symbol, {}) if custom else {}
             has_value = (num is not None and symbol in data and value is not None) \
                 if custom else bool(value)
             if group is None:
@@ -538,6 +583,9 @@ def render_table(style: dict, data: dict, title: str = None,
                         facecolor = style["highlight_bg"] if has_value else style.get("plain_bg", style.get("bg", "#f0f0f0"))
                     else:
                         facecolor = style.get("bg", "#f0f0f0")
+
+                if custom and not element_edit.get("show_color", True):
+                    facecolor = style.get("empty", style.get("plain_bg", style.get("bg", "#f0f0f0")))
 
                 if edge:
                     lw, ec = edge
@@ -597,10 +645,10 @@ def render_table(style: dict, data: dict, title: str = None,
                         draw_text("value", x + 0.5, y + 0.12, None, fontsize=6, ha="center",
                                 color=base_color, **text_props)
                     else:
-                        draw_text("value", x + 0.5, y + 0.12, _fmt_value(value, style["fmt"]),
+                        draw_text("value", x + 0.5, y + 0.12, _fmt_value(value, style["fmt"], style.get("rounding", "half_up") if custom else "legacy"),
                                 fontsize=6, ha="center", color=base_color, **text_props)
                 elif kind == "heatmap" and has_value:
-                    text = _fmt_value(value, style["fmt"])
+                    text = _fmt_value(value, style["fmt"], style.get("rounding", "half_up") if custom else "legacy")
                     draw_text("value", x + 0.5, y + 0.12, text, fontsize=6, ha="center",
                             color=base_color, **text_props)
                 elif kind == "labels" and has_value:
@@ -622,7 +670,17 @@ def render_table(style: dict, data: dict, title: str = None,
             for figure_ax in fig.axes:
                 figure_ax.patch.set_alpha(0)
         apply_text_fallbacks(fig)
-        plt.tight_layout()
+        if custom and style.get("margins") is not None:
+            left, bottom, right, top = style["margins"]
+            fig.subplots_adjust(left=left, bottom=bottom, right=right, top=top)
+        else:
+            plt.tight_layout()
+        if custom and cbar is not None and style.get("cbar_box") is not None:
+            cbar.ax.set_axes_locator(None)
+            cbar.ax.set_box_aspect(None)
+            cbar.ax.set_aspect("auto")
+            cbar.ax.set_position(style["cbar_box"])
+
         return fig
     except BaseException:
         plt.close(fig)

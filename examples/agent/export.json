@@ -1,0 +1,13 @@
+{
+  "api_version": 1,
+  "action": "export",
+  "project": "output/agent-demo.ptproj",
+  "output_dir": "output/agent-export",
+  "formats": [
+    "svg",
+    "png",
+    "pdf"
+  ],
+  "base": "agent_demo",
+  "allow_out_of_range": false
+}

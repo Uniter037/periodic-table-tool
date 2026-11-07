@@ -44,6 +44,7 @@ def test_preset_output_roundtrip_and_legacy(custom, monkeypatch, tmp_path):
     custom.preset_combo.set('roundtrip')
     custom.fmt_var.set('png')
     custom.out_var.set('other')
+    custom.preset_include_data.set(True)
     custom._preset_load()
     assert custom.fmt_var.get() == 'pdf'
     assert custom.out_var.get() == str(tmp_path / 'exports')

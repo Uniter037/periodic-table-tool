@@ -48,6 +48,11 @@ def app(_application, monkeypatch, tmp_path):
     snapshot = copy.deepcopy(instance._test_initial)
     snapshot["current"]["output_dir"] = str(tmp_path / "output")
     instance._restore_document(snapshot)
+    instance.data_notebook.select(0)
+    instance.mark_mode_var.set(True)
+    instance.mark_symbol_var.set("（点击预览元素）")
+    instance.mark_value_var.set("")
+    instance.preset_include_data.set(False)
     instance.presets = main.PresetStore(str(tmp_path / "presets"))
     instance.project_path = None
     instance._history = History(instance._document_snapshot())

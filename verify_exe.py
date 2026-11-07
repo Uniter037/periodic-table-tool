@@ -19,6 +19,46 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 
 
+def inspect_agent_interface(target, root, environment, options, timeout):
+    """Exercise the same windowed binary using JSON files, without opening Tk."""
+    counter = 0
+    def call(request, expected_ok=True):
+        nonlocal counter
+        counter += 1
+        source = root / f"agent-request-{counter}.json"
+        response = root / f"agent-response-{counter}.json"
+        source.write_text(json.dumps({"api_version":1, **request}), encoding="utf-8")
+        process = subprocess.run([str(target), "--agent-request", str(source),
+                                  "--agent-response", str(response)], cwd=root, env=environment,
+                                 timeout=min(timeout, 60), **options)
+        result = json.loads(response.read_text(encoding="utf-8"))
+        if result.get("ok") is not expected_ok or process.returncode != (0 if expected_ok else 2):
+            raise RuntimeError(f"Agent interface failed: {result}")
+        return result
+    description = call({"action":"describe"})["result"]
+    if "update" not in description["actions"]:
+        raise RuntimeError("Agent capability discovery incomplete")
+    project = root / "agent-project.ptproj"
+    created = call({"action":"create", "project":str(project), "patch":{
+        "data":{"Y":.73925}, "params":{"vmin":"0.72","vcenter":"0.7318","vmax":"0.76",
+        "fmt":"四位小数", "layout":"镧锕三行块（重构）"}}})["result"]
+    changed = call({"action":"update", "project":str(project),
+                    "expected_revision":created["revision"], "patch":{"data":{"Fe":.73},
+                    "element_overrides":{"Y":{"show_value":False}}}})["result"]
+    conflict = call({"action":"update", "project":str(project),
+                     "expected_revision":created["revision"], "patch":{"data":{"Y":999}}}, False)
+    if conflict['error']['code'] != 'REVISION_CONFLICT':
+        raise RuntimeError("Stale writes were not rejected")
+    checked = call({"action":"inspect", "project":str(project)})["result"]
+    if checked['document']['current']['data'] != {'Y':.73925, 'Fe':.73}:
+        raise RuntimeError("Agent edits lost measurements")
+    exported = call({"action":"export", "project":str(project), "expected_revision":changed['revision'],
+                     "output_dir":str(root/'agent_exports'),"formats":["png","svg","pdf"]})['result']
+    if len(exported['files']) != 3 or any(not Path(f['path']).is_file() for f in exported['files']):
+        raise RuntimeError("Agent export did not publish all requested formats")
+    return {"passed":True,"commands":counter,"stale_write_rejected":True,"formats":["png","svg","pdf"]}
+
+
 def inspect_outputs(folder: Path, marker: Path) -> dict:
     lines = marker.read_text(encoding="utf-8").splitlines()
     required = {"app_created", "preview:passed", "export:svg", "export:png", "export:pdf",
@@ -87,10 +127,11 @@ def verify(executable: Path, timeout: float = 180) -> dict:
         if code:
             raise RuntimeError(f"EXE exited with code {code}")
         exports = inspect_outputs(outputs, root / "smoke_progress.txt")
+        agent = inspect_agent_interface(target, root, environment, options, timeout)
         return {"executable": str(executable),
                 "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "elapsed_seconds": round(time.monotonic() - started, 2),
-                "exports": exports, "passed": True}
+                "exports": exports, "agent_interface": agent, "passed": True}
 
 
 def main():

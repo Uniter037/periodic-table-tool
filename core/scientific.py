@@ -74,10 +74,57 @@ def color_nodes(nodes):
     return nodes
 
 
+def validate_element_overrides(value):
+    """Validate per-element edits and return an independent deep copy."""
+    from .elements_data import ALL_SYMBOLS
+    if not isinstance(value, dict):
+        raise ValueError("element_overrides 必须为字典")
+    allowed = {"show_value", "show_color", "include_in_range", "value_dx", "value_dy"}
+    for symbol, options in value.items():
+        if not isinstance(symbol, str) or symbol not in ALL_SYMBOLS:
+            raise ValueError(f"未知元素符号: {symbol!r}")
+        if not isinstance(options, dict) or set(options) - allowed:
+            raise ValueError(f"{symbol} 元素覆盖配置无效")
+        for key, item in options.items():
+            if key in ("show_value", "show_color", "include_in_range"):
+                if not isinstance(item, bool):
+                    raise ValueError(f"{symbol}.{key} 必须为 bool")
+            elif not _finite_number(item):
+                raise ValueError(f"{symbol}.{key} 必须为有限数字")
+    return deepcopy(value)
+
+
+def range_data(style, data):
+    """Return measurements selected for automatic range; never mutate data."""
+    edits = validate_element_overrides(style.get("element_overrides", {}))
+    return {s: v for s, v in data.items() if edits.get(s, {}).get("include_in_range", True)}
+
+
+def _figure_box(value, key):
+    if (not isinstance(value, (list, tuple)) or len(value) != 4 or
+            any(not _finite_number(v) for v in value)):
+        raise ValueError(f"{key} 必须为四个有限数字")
+    a, b, c, d = value
+    if key == "margins":
+        valid = 0 <= a < c <= 1 and 0 <= b < d <= 1
+    else:
+        valid = 0 <= a < 1 and 0 <= b < 1 and c > 0 and d > 0 and a + c <= 1 and b + d <= 1
+    if not valid:
+        raise ValueError(f"{key} Figure 比例或区域无效")
+    return tuple(value)
+
+
 def validate_render_options(style):
     """Resolve the custom/corrected field contract without changing the input."""
     from matplotlib.colors import is_color_like
     work = dict(style)
+    work.setdefault("rounding", "half_up")
+    if work["rounding"] not in ("half_up", "legacy"):
+        raise ValueError("rounding 必须为 half_up 或 legacy")
+    work["element_overrides"] = validate_element_overrides(work.get("element_overrides", {}))
+    for key in ("margins", "cbar_box"):
+        if work.get(key) is not None:
+            work[key] = _figure_box(work[key], key)
     for key in ("symbol_fs", "number_fs", "value_fs", "label_fs"):
         if key in work and (not _finite_number(work[key]) or work[key] <= 0):
             raise ValueError(f"{key} 必须是有限正数")
@@ -134,7 +181,9 @@ def range_warnings(style, data):
         return []
     low, high = norm[1], norm[-1]
     warnings = []
-    outside = [s for s, value in data.items() if value < low or value > high]
+    edits = validate_element_overrides(style.get("element_overrides", {}))
+    outside = [s for s, value in data.items()
+               if edits.get(s, {}).get("show_color", True) and (value < low or value > high)]
     if outside:
         warnings.append(f"{len(outside)} 个数值超出色标范围（{', '.join(outside[:8])}）；可使用自动范围")
     cfg = style.get("cbar")

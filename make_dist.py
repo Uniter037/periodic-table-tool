@@ -4,7 +4,7 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 DIST_DIR = ROOT / "dist"
 ZIP_NAME = f"periodic-table-tool-v{VERSION}.zip"
 INCLUDE = ["main.py", "README.md", "requirements.txt", "pyproject.toml",

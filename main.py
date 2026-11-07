@@ -21,6 +21,10 @@ import copy
 import math
 import os
 import sys
+if __name__ == "__main__" and any(arg == "--agent-request" or arg.startswith("--agent-request=") for arg in sys.argv[1:]):
+    from application.agent_api import main as agent_main
+    raise SystemExit(agent_main())
+
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
@@ -65,6 +69,7 @@ from core.jobs import RenderJob
 from infrastructure.diagnostics import DiagnosticService, DiagnosticSettings
 from ui.preview import PreviewCanvas
 from ui.scrolling import ScrollableFrame
+from ui.edit_controls import EditControlsMixin, parse_figure_size, parse_box
 _smoke_log("import:after_core")
 
 SYMBOLS = set(ALL_SYMBOLS)
@@ -93,16 +98,9 @@ BASE_WINDOW_WIDTH = 1280     # auto 缩放的基准窗口宽度
 SCALE_RANGE = (0.9, 1.5)     # auto 缩放的上下限
 
 # 自定义模式高级参数：GUI 中文标签 → 样式值（反向映射用于回填）
-LAYOUT_CHOICES = {"镧锕三行块（重构）": "reconstructed",
-                  "展开 8-9 行（经典）": "classic"}
-KIND_CHOICES = {"热力图": "heatmap", "标注图（文本）": "labels"}
-FONT_CHOICES = {"Arial": "Arial", "Helvetica": "Helvetica",
-                "DejaVu Sans": "DejaVu Sans"}
-EDGE_CHOICES = {"无边框": "none", "黑色细线": "black"}
-EMPTY_CHOICES = {"浅灰": "#f0f0f0", "白色": "white", "白色(w)": "w", "透明": "none"}
-FMT_CHOICES = {"百分比 2 位": "percent2", "两位小数": "2f", "三位小数": "3f",
-               "四位小数": "4f", "科学计数法": "scientific", "原始": "raw"}
-DPI_CHOICES = {"72": 72, "100": 100, "150": 150, "300": 300}
+from core.options import (apply_custom_params, LAYOUT_CHOICES, KIND_CHOICES,
+                          FONT_CHOICES, EDGE_CHOICES, EMPTY_CHOICES,
+                          FMT_CHOICES, DPI_CHOICES)
 _REV = {name: {v: k for k, v in m.items()} for name, m in
         (("layout", LAYOUT_CHOICES), ("kind", KIND_CHOICES),
          ("font", FONT_CHOICES), ("edge", EDGE_CHOICES),
@@ -222,10 +220,10 @@ class DataTable(tk.Frame):
 # ---------------------------------------------------------------------------
 # 主应用
 # ---------------------------------------------------------------------------
-class App(tk.Tk):
+class App(EditControlsMixin, tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工作台 · v1.7.0")
+        self.title("元素周期表绘图工作台 · v1.8.0")
         self.geometry("1180x760")
         self.minsize(800, 560)
         self._refresh_job = None
@@ -237,6 +235,7 @@ class App(tk.Tk):
         self.excel_collection = DatasetCollection()
         self._excel_attached = False
         self.data = {}                       # 统一数据源 {符号: 值}
+        self.element_overrides = {}
         self.custom_colors = list(DEFAULT_COLORS)
         self.user_dir = user_directory()
         if not os.environ.get("PTT_USER_DIR"):
@@ -432,10 +431,15 @@ class App(tk.Tk):
         if self._main is None:
             return
         layout = self._effective_layout()
+        if hasattr(self, "dataset_bar"):
+            if layout == "split-v" and self.winfo_height() < 700:
+                self.dataset_bar.pack_forget()
+            elif not self.dataset_bar.winfo_manager():
+                self.dataset_bar.pack(side="top", fill="x", before=self._main)
         if layout == "split-v":
-            self._left.configure(height=max(110, min(190, round(self.winfo_height() * .20))))
+            self._left.configure(height=max(100, min(170, round(self.winfo_height() * .18))))
         if self._right is not None and self._right.panes():
-            self._right.paneconfigure(self._right.panes()[0], minsize=210 if layout == "split-v" and self.winfo_height() < 700 else 252)
+            self._right.paneconfigure(self._right.panes()[0], minsize=220 if layout == "split-v" and self.winfo_height() < 700 else 252)
         if layout == self._current_layout:
             return
         self._current_layout = layout
@@ -452,7 +456,7 @@ class App(tk.Tk):
         else:
             main.columnconfigure(0, weight=1)
             main.rowconfigure(1, weight=1)
-            self._left.configure(height=max(110, min(190, round(self.winfo_height() * .20))))
+            self._left.configure(height=max(100, min(170, round(self.winfo_height() * .18))))
             self._left.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
             self._right.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
 
@@ -557,6 +561,7 @@ class App(tk.Tk):
         project_menu.add_command(label="撤销  Ctrl+Z", command=self._undo)
         project_menu.add_command(label="重做  Ctrl+Y", command=self._redo)
         project_menu.add_command(label="切换 Excel 数据组", command=self._show_excel_groups)
+        project_menu.add_command(label="批量导出已导入数据组…", command=self._batch_excel_groups)
         menubar.add_cascade(label="项目", menu=project_menu)
         self.bind("<Control-z>", lambda e: self._undo())
         self.bind("<Control-y>", lambda e: self._redo())
@@ -607,6 +612,12 @@ class App(tk.Tk):
                                 style="Export.TButton" if label == "导出图片" else "TButton")
             button.pack(side="left", padx=(0, 6))
             self.toolbar_buttons[label] = button
+        self.dataset_bar = ttk.Frame(self, padding=(8, 0, 8, 5))
+        self.dataset_bar.pack(side="top", fill="x")
+        self.dataset_summary = tk.StringVar(value="Excel：尚未导入数据组")
+        ttk.Label(self.dataset_bar, textvariable=self.dataset_summary).pack(side="left", fill="x", expand=True)
+        ttk.Button(self.dataset_bar, text="切换数据组", command=self._show_excel_groups).pack(side="left", padx=4)
+        ttk.Button(self.dataset_bar, text="批量导出", command=self._batch_excel_groups).pack(side="left")
         self._status = ttk.Frame(self, padding=(8, 4))
         self._status.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="就绪 · 导入、粘贴或载入示例开始绘图")
@@ -663,6 +674,7 @@ class App(tk.Tk):
             ("kind", "图表类型", list(KIND_CHOICES)),
             ("title", "图标题", None), ("font", "字体（可输入本机字体名称）", sorted(set(tkfont.families(self)) | set(FONT_CHOICES) | {"Microsoft YaHei", "SimHei", "SimSun"})),
             ("fmt", "数值格式", list(FMT_CHOICES)),
+            ("rounding", "小数舍入规则", ["十进制四舍五入", "原脚本浮点舍入"]),
             ("symbol_fs", "元素符号字号（pt）", None),
             ("number_fs", "原子序数字号（pt）", None),
             ("value_fs", "数值 / 标注字号（pt）", None),
@@ -750,8 +762,15 @@ class App(tk.Tk):
         self.cbar_controls = (cbar_lf,)
 
         for key, label, choices in (("dpi", "输出分辨率 dpi", list(DPI_CHOICES)),
-                                   ("figsize", "画幅尺寸（宽 x 高，英寸）", None)):
+                                   ("figsize", "画幅尺寸（宽x高，默认英寸；可加 mm）", None),
+                                   ("crop_mode", "输出画幅", ["固定画幅", "紧裁切"])):
             field(export, key, label, choices)
+        for key in ("margins", "cbar_box"):
+            self.param_vars[key] = tk.StringVar(value="")
+            self.param_vars[key].trace_add("write", lambda *args: self._refresh_preview())
+        geometry_button = ttk.Button(export, text="精确尺寸 / 页边距 / 颜色条…", command=self._show_geometry_dialog)
+        geometry_button.pack(fill="x", pady=4)
+        self.custom_controls.append(geometry_button)
         ttk.Label(export, text="输出格式").pack(anchor="w", pady=(8, 2))
         self.fmt_var = tk.StringVar(value="svg")
         ttk.Combobox(export, textvariable=self.fmt_var, values=FORMATS, state="readonly").pack(fill="x")
@@ -762,13 +781,16 @@ class App(tk.Tk):
         ttk.Entry(export, textvariable=self.out_var).pack(fill="x")
         ttk.Button(export, text="选择输出目录", command=self._choose_out_dir).pack(fill="x", pady=4)
         ttk.Label(export, text="导出会自动命名，不覆盖已有文件。", wraplength=280).pack(anchor="w", pady=4)
-        preset_lf = ttk.LabelFrame(export, text="预设（设置与数据）", padding=6)
+        preset_lf = ttk.LabelFrame(export, text="预设（默认只应用样式）", padding=6)
         preset_lf.pack(fill="x", pady=10)
         self.preset_name_var = tk.StringVar()
         ttk.Label(preset_lf, text="预设名称").pack(anchor="w")
         ttk.Entry(preset_lf, textvariable=self.preset_name_var).pack(fill="x", pady=4)
         self.preset_combo = ttk.Combobox(preset_lf, state="readonly")
         self.preset_combo.pack(fill="x", pady=4)
+        self.preset_include_data = tk.BooleanVar(value=False)
+        ttk.Checkbutton(preset_lf, text="保存 / 加载时包含数据（会替换当前数据）",
+                        variable=self.preset_include_data).pack(anchor="w")
         for label, command in (("保存预设", self._preset_save), ("加载预设", self._preset_load),
                                ("删除预设", self._preset_delete), ("刷新列表", self._preset_refresh)):
             ttk.Button(preset_lf, text=label, command=command).pack(fill="x", pady=2)
@@ -779,9 +801,15 @@ class App(tk.Tk):
         prev_lf = ttk.LabelFrame(right, text="实时预览 · 拖动下方分隔条调整数据区", padding=4)
         self.preview = PreviewCanvas(prev_lf)
         self.preview.on_click = self._on_preview_click
+        self.preview.on_move = self._move_element_label
+        self.preview.on_colorbar_move = self._move_colorbar
         self.preview.pack(fill="both", expand=True)
-        self.mark_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(prev_lf, text="图形化标注：点击元素格编辑", variable=self.mark_mode_var).pack(anchor="w")
+        self.mark_mode_var = tk.BooleanVar(value=True)
+        preview_tools = ttk.Frame(prev_lf)
+        preview_tools.pack(fill="x")
+        ttk.Checkbutton(preview_tools, text="图形标注：点击编辑 / 左拖移动", variable=self.mark_mode_var,
+                        command=self._update_preview_edit_mode).pack(side="left")
+        ttk.Button(preview_tools, text="样图对照…", command=self._open_reference).pack(side="right")
         data_nb = self.data_notebook = ttk.Notebook(right)
         right.add(prev_lf, minsize=252, height=440, stretch="always")
         right.add(data_nb, minsize=150, height=180, stretch="never")
@@ -795,19 +823,26 @@ class App(tk.Tk):
         self.table.pack(fill="both", expand=True)
         self.mark_tab = ttk.Frame(data_nb, padding=6)
         data_nb.add(self.mark_tab, text="图形化标注")
-        self.mark_tab.columnconfigure(1, weight=1)
+        mark_scroll = ScrollableFrame(self.mark_tab)
+        mark_scroll.pack(fill="both", expand=True)
+        mark_content = mark_scroll.content
+        mark_content.columnconfigure(1, weight=1)
         self.mark_symbol_var = tk.StringVar(value="（点击预览元素）")
         self.mark_value_var = tk.StringVar()
-        ttk.Label(self.mark_tab, text="当前元素").grid(row=0, column=0, sticky="w")
-        ttk.Label(self.mark_tab, textvariable=self.mark_symbol_var).grid(row=0, column=1, sticky="w")
-        ttk.Label(self.mark_tab, text="数值 / 标注").grid(row=1, column=0, sticky="w", pady=4)
-        entry = ttk.Entry(self.mark_tab, textvariable=self.mark_value_var)
+        ttk.Label(mark_content, text="当前元素").grid(row=0, column=0, sticky="w")
+        ttk.Label(mark_content, textvariable=self.mark_symbol_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(mark_content, text="数值 / 标注").grid(row=1, column=0, sticky="w", pady=4)
+        entry = self.mark_entry = ttk.Entry(mark_content, textvariable=self.mark_value_var)
         entry.grid(row=1, column=1, sticky="ew", pady=4)
         entry.bind("<Return>", lambda e: self._apply_mark())
-        buttons = ttk.Frame(self.mark_tab)
+        entry.bind("<Escape>", lambda e: self._reset_mark())
+        buttons = ttk.Frame(mark_content)
         buttons.grid(row=2, column=0, columnspan=2, sticky="w")
         ttk.Button(buttons, text="应用标注", command=self._apply_mark).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="清除该元素", command=self._clear_mark).pack(side="left")
+        ttk.Button(buttons, text="清除该元素", command=self._clear_mark).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="取消修改", command=self._reset_mark).pack(side="left")
+        ttk.Button(mark_content, text="该元素的显示 / 着色 / 位置…", command=self._show_element_options).grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=3)
         self._apply_layout()
         self._apply_scale()
         self._schedule_ratio()
@@ -880,6 +915,7 @@ class App(tk.Tk):
         style = STYLES[style_id]
         self._active_style = style_id
         self.cbar_override = None
+        self.element_overrides = {}
         self.custom_colors = list(DEFAULT_COLORS)
         self.show_cbar_var.set(True)
         self.show_cbar_labels_var.set(True)
@@ -909,6 +945,9 @@ class App(tk.Tk):
         self.param_vars["dpi"].set("100")
         self.param_vars["figsize"].set("10x5")
         self.param_vars["title"].set("")
+        for key, value in (("rounding", "十进制四舍五入"), ("crop_mode", "固定画幅"),
+                           ("margins", ""), ("cbar_box", "")):
+            self.param_vars[key].set(value)
         for key, default in (("symbol_fs", 9), ("number_fs", 6), ("value_fs", 6),
                              ("cbar_orientation", "vertical"), ("cbar_label", ""),
                              ("edge_width", style.get("edge", (0, "black"))[0] if style.get("edge") else 0),
@@ -950,6 +989,7 @@ class App(tk.Tk):
         self._preset_refresh()
         self._cbar_refresh_tree()
         self._restoring = restoring
+        self._sync_mark_selection()
         self._refresh_preview()
 
     def _compat_changed(self):
@@ -962,6 +1002,7 @@ class App(tk.Tk):
         self._refresh_preview()
 
     def _apply_payload(self, payload, include_data=True):
+        self.element_overrides = copy.deepcopy(payload.get("element_overrides", {}))
         for key, value in payload.get("params", {}).items():
             if key in self.param_vars:
                 self.param_vars[key].set(str(value))
@@ -1000,6 +1041,8 @@ class App(tk.Tk):
             raise ValueError("输出格式无效")
         if payload.get("cbar_override") is not None:
             colorbar_config(payload["cbar_override"])
+        from core.scientific import validate_element_overrides
+        validate_element_overrides(payload.get("element_overrides", {}))
         json.dumps(payload, allow_nan=False)
 
     def _document_snapshot(self):
@@ -1029,6 +1072,7 @@ class App(tk.Tk):
             self._on_style_change()
             self._apply_payload(payload)
             self._cbar_refresh_tree()
+            self._sync_mark_selection()
         finally:
             self._restoring = False
         self._refresh_preview()
@@ -1132,11 +1176,13 @@ class App(tk.Tk):
         # 旧预设中的未知符号不能因编辑其他元素而被静默删除。
         unknown = {s: v for s, v in self.data.items() if s not in SYMBOLS}
         self.data = {**unknown, **self.table.get_data()}
+        self._sync_mark_selection()
         self._refresh_preview()
 
     def _clear_data(self):
         self.data = {}
         self.table.clear()
+        self._sync_mark_selection()
         self._refresh_preview()
 
     def _load_demo(self):
@@ -1149,6 +1195,7 @@ class App(tk.Tk):
             return
         self.data = data
         self.table.set_data(data)
+        self._sync_mark_selection()
         self.status_var.set(f"已载入示例数据（{len(data)} 个元素）")
         self._refresh_preview()
 
@@ -1193,6 +1240,7 @@ class App(tk.Tk):
         self.excel_collection.select(dataset_id)
         self.data = self.excel_collection.effective_data()
         self.table.set_data(self.data)
+        self._sync_mark_selection()
         self._excel_attached = True
         self._refresh_preview()
 
@@ -1217,6 +1265,9 @@ class App(tk.Tk):
             if choices.curselection():
                 self._select_excel_group(datasets[choices.curselection()[0]]["id"])
                 window.destroy()
+        choices.bind("<Double-Button-1>", lambda event: apply())
+        window.bind("<Return>", lambda event: apply())
+        window.bind("<Escape>", lambda event: window.destroy())
         ttk.Button(window, text="载入当前图", command=apply).pack(pady=8)
 
     def _import_text(self, text, source="粘贴数据"):
@@ -1231,6 +1282,7 @@ class App(tk.Tk):
         self._excel_attached = False
         self.data = data
         self.table.set_data(data)
+        self._sync_mark_selection()
         self.status_var.set(f"已从 {source} 导入 {len(data)} 条数据")
         self._refresh_preview()
         return data
@@ -1278,8 +1330,9 @@ class App(tk.Tk):
         self._commit_table_edit()
         try:
             data = self._validated_data("heatmap")
+            data = {s: v for s, v in data.items() if self.element_overrides.get(s, {}).get("include_in_range", True)}
             if not data:
-                raise ValueError("请先输入数值数据")
+                raise ValueError("没有参与自动范围的数值，请输入数据或开启元素的参与范围选项")
             low, high = min(data.values()), max(data.values())
             if low == high:
                 padding = max(abs(low) * .05, .5)
@@ -1302,14 +1355,26 @@ class App(tk.Tk):
         if not self.mark_mode_var.get():
             self.status_var.set("提示：请先勾选「图形化标注模式」再点击预览标注。")
             return
+        if sym not in SYMBOLS:
+            return
+        self._commit_table_edit()
         self.mark_symbol_var.set(sym)
         self.mark_value_var.set(str(self.data.get(sym, "")))
-        self.status_var.set(f"已选中元素 {sym}，输入数值后点「应用标注」")
+        self.preview.set_selected(sym)
+        self.status_var.set(f"已选中 {sym}：输入后按回车应用，Esc取消修改；Ctrl+Z撤销。")
         # 跳到标注 Tab
         self._mark_tab_select()
+        self.mark_entry.focus_set()
+        self.mark_entry.selection_range(0, "end")
 
     def _mark_tab_select(self):
         self.data_notebook.select(self.mark_tab)
+
+    def _reset_mark(self):
+        sym = self.mark_symbol_var.get()
+        self.mark_value_var.set(str(self.data.get(sym, "")))
+        self.status_var.set("已取消未应用的修改。")
+        return "break"
 
     def _apply_mark(self):
         sym = self.mark_symbol_var.get()
@@ -1318,6 +1383,12 @@ class App(tk.Tk):
             return
         val = self.mark_value_var.get().strip()
         if val:
+            try:
+                convert_data({sym: val}, self._current_work_style()["kind"])
+            except ValueError as exc:
+                self.status_var.set(f"{sym} 未修改：{exc}；文字标注请使用标注图样式。")
+                self.mark_entry.focus_set()
+                return "break"
             self.data[sym] = val
         else:
             self.data.pop(sym, None)
@@ -1330,7 +1401,8 @@ class App(tk.Tk):
         if sym in SYMBOLS:
             self.data.pop(sym, None)
             self.table.set_data(self.data)
-            self.status_var.set(f"已清除 {sym}")
+            self.mark_value_var.set("")
+            self.status_var.set(f"已清除 {sym}，可按Ctrl+Z恢复。")
             self._refresh_preview()
         else:
             self.status_var.set("提示：请先在预览图中点击一个元素格子。")
@@ -1508,6 +1580,7 @@ class App(tk.Tk):
             "cbar_override": self.cbar_override,
             "custom_colors": self.custom_colors,
             "data": self.data,
+            "element_overrides": copy.deepcopy(self.element_overrides),
         }
 
     def _preset_save(self):
@@ -1517,7 +1590,10 @@ class App(tk.Tk):
             messagebox.showwarning("提示", "请先输入预设名。")
             return
         try:
-            path = self.presets.save(name, self._current_preset_payload())
+            payload = self._current_preset_payload()
+            if not self.preset_include_data.get():
+                payload.pop("data", None)
+            path = self.presets.save(name, payload)
         except (ValueError, OSError) as exc:
             messagebox.showerror("保存失败", str(exc))
             return
@@ -1537,7 +1613,7 @@ class App(tk.Tk):
                 return list(DEFAULT_COLORS)
         return colors if len(colors) >= 2 else list(DEFAULT_COLORS)
 
-    def _preset_load(self):
+    def _preset_load(self, include_data=None):
         name = self.preset_combo.get() or self.preset_name_var.get().strip()
         if not name:
             return
@@ -1547,12 +1623,18 @@ class App(tk.Tk):
             payload = self.presets.load(name)
             payload.setdefault("mode_id", "custom")
             self._validate_payload(payload)
+            include_data = self.preset_include_data.get() if include_data is None else include_data
+            if include_data and "data" not in payload:
+                raise ValueError("此预设只保存了样式，请取消包含数据后加载")
+            if not include_data:
+                for key in ("data", "output_format", "output_dir"):
+                    payload[key] = copy.deepcopy(before["current"][key])
             snapshot = {"schema": 1, "current": payload,
                         "styles": copy.deepcopy(self._style_states),
                         "excel_collection": before["excel_collection"],
-                        "excel_attached": False}
+                        "excel_attached": before["excel_attached"] if not include_data else False}
             self._restore_document(snapshot)
-            self.status_var.set(f"已加载预设 {name}")
+            self.status_var.set(f"已加载预设 {name}" + ("（含数据）" if include_data else "（仅样式，保留当前数据与输出位置）"))
         except Exception as exc:
             self._restore_document(before)
             messagebox.showerror("加载失败", str(exc))
@@ -1613,11 +1695,28 @@ class App(tk.Tk):
             self.after_cancel(self._draft_job)
         self._draft_job = self.after(800, self._save_draft)
 
+    def _update_dataset_summary(self):
+        if not hasattr(self, "dataset_summary"):
+            return
+        snapshot = self.excel_collection.snapshot()
+        total = len(snapshot["datasets"])
+        if not total:
+            self.dataset_summary.set("Excel：尚未导入数据组")
+            return
+        if not self._excel_attached:
+            self.dataset_summary.set(f"已保留 {total} 组 · 当前绘制手动数据")
+            return
+        active = next(d for d in snapshot["datasets"] if d["id"] == snapshot["active_dataset_id"])
+        metric = next(m["name"] for m in snapshot["metrics"] if m["id"] == active["metric_id"])
+        condition = next(c["label"] for c in snapshot["conditions"] if c["id"] == active["condition_id"])
+        self.dataset_summary.set(f"{metric} · {condition} · 共 {total} 组")
+
     def _refresh_preview(self, *args):
         """合并连续输入；同步调用方使用 _refresh_preview_now。"""
         self._cancel_refresh()
         if self._restoring:
             return
+        self._update_dataset_summary()
         self._record_document_change()
         if self._job_mode in ("export", "batch", "cmap"):
             self._pending_preview = True
@@ -1665,6 +1764,7 @@ class App(tk.Tk):
                 self.status_var.set("注意：" + "；".join(warnings))
             self._preview_error = None
             self.preview.set_stale(False)
+            self._sync_preview_edit_controls(style)
             return True
         except Exception as exc:
             self._preview_error = str(exc)
@@ -1753,6 +1853,7 @@ class App(tk.Tk):
             if mode == "preview":
                 self.preview.show_packet(result["png"], result["hits"])
                 self.preview.set_stale(False)
+                self._sync_preview_edit_controls(self._job_request["style"], result.get("cbar_box"))
                 self._preview_error = None
                 warnings = range_warnings(self._job_request["style"], self._job_request["data"])
                 self.status_var.set("注意：" + "；".join(warnings) if warnings else "预览已更新 · 滚轮缩放 / 右键平移")
@@ -1799,6 +1900,71 @@ class App(tk.Tk):
         except Exception as exc:
             self.status_var.set(f"导出失败：{exc}")
             messagebox.showerror("导出失败", str(exc))
+
+    def _batch_excel_groups(self):
+        self._commit_table_edit()
+        self._stash_excel_group()
+        snapshot = self.excel_collection.snapshot()
+        datasets = snapshot["datasets"]
+        if not datasets:
+            self.status_var.set("请先导入Excel数据组。")
+            return
+        labels = {c["id"]: c["label"] for c in snapshot["conditions"]}
+        metrics = {m["id"]: m["name"] for m in snapshot["metrics"]}
+        window = tk.Toplevel(self)
+        window.title("批量导出已导入数据组")
+        window.geometry("520x380")
+        ttk.Label(window, text="选择同一指标的多组数据，使用当前配色、固定色标和输出格式。", wraplength=490).pack(pady=8)
+        choices = tk.Listbox(window, selectmode="extended", exportselection=False)
+        choices.pack(fill="both", expand=True, padx=10)
+        for data in datasets:
+            choices.insert("end", f'{metrics[data["metric_id"]]} · {labels[data["condition_id"]]}')
+        tools = ttk.Frame(window)
+        tools.pack(fill="x", padx=10, pady=4)
+        selected_count = tk.StringVar(value="已选择 0 组")
+        def update_count(event=None):
+            selected_count.set(f"已选择 {len(choices.curselection())} 组")
+        def select_metric():
+            active = snapshot["active_dataset_id"]
+            metric_id = next(d["metric_id"] for d in datasets if d["id"] == active)
+            choices.selection_clear(0, "end")
+            for index, data in enumerate(datasets):
+                if data["metric_id"] == metric_id:
+                    choices.selection_set(index)
+            update_count()
+        def clear_selection():
+            choices.selection_clear(0, "end")
+            update_count()
+        ttk.Button(tools, text="选择当前指标全部组", command=select_metric).pack(side="left")
+        ttk.Button(tools, text="清空选择", command=clear_selection).pack(side="left", padx=4)
+        ttk.Label(tools, textvariable=selected_count).pack(side="right")
+        choices.bind("<<ListboxSelect>>", update_count)
+        select_metric()
+        window.bind("<Escape>", lambda event: window.destroy())
+        error = tk.StringVar()
+        ttk.Label(window, textvariable=error, foreground="#b42318", wraplength=490).pack()
+        def export():
+            from application.batch_datasets import plan_dataset_batch
+            try:
+                selected = [datasets[i] for i in choices.curselection()]
+                if not selected:
+                    raise ValueError("请至少选择一组数据")
+                if len({d["metric_id"] for d in selected}) != 1:
+                    raise ValueError("请每次选择同一指标的数据组，避免不同指标误用同一色标")
+                request = self._render_request("preview")
+                if self._current_style_id() == "cmap_preview":
+                    raise ValueError("请先选择周期表绘图样式")
+                items = plan_dataset_batch(snapshot, [d["id"] for d in selected])
+                request["items"] = [(name, convert_data(data, request["style"]["kind"])) for name, data in items]
+                warnings = [name for name, data in request["items"] if range_warnings(request["style"], data)]
+                if warnings and not messagebox.askyesno("色标范围提示", "以下数据组超出当前色标：\n" + "\n".join(warnings) + "\n仍按当前色标导出？", parent=window):
+                    return
+                request["mode"] = "batch"
+                self._start_job(request)
+                window.destroy()
+            except Exception as exc:
+                error.set(str(exc))
+        ttk.Button(window, text="开始批量导出", command=export).pack(pady=8)
 
     def _batch_export(self, paths=None):
         self._commit_table_edit()
@@ -1874,113 +2040,10 @@ class App(tk.Tk):
 
 
     def _apply_custom_params(self, style):
-        import copy
-        import math
-        work = copy.deepcopy(style)
-        work["kind"] = KIND_CHOICES.get(self.param_vars["kind"].get(), "heatmap")
-        cmap_name = self.param_vars["cmap"].get().strip()
-        try:
-            vmin = float(self.param_vars["vmin"].get()) if work["kind"] == "heatmap" else 0.0
-            vmax = float(self.param_vars["vmax"].get()) if work["kind"] == "heatmap" else 1.0
-            center_text = self.param_vars["vcenter"].get().strip() if work["kind"] == "heatmap" else ""
-            vcenter = float(center_text) if center_text else None
-        except (ValueError, TypeError) as exc:
-            raise ValueError("vmin / vcenter / vmax 必须是数字") from exc
-        # 拒绝 NaN / Infinity，避免污染 norm 与渲染
-        if (not math.isfinite(vmin) or not math.isfinite(vmax) or
-                (vcenter is not None and not math.isfinite(vcenter))):
-            raise ValueError("vmin / vcenter / vmax 必须是有限数值")
-        work["norm"] = (("twoslope", vmin, vcenter, vmax) if vcenter is not None
-                        else ("normalize", vmin, vmax))
-        # 范围顺序校验：vmin < vcenter < vmax（normalize 时 vmin < vmax）
-        if vcenter is not None:
-            if not (vmin < vcenter < vmax):
-                raise ValueError("范围顺序应为 vmin < vcenter < vmax")
-        elif vmin >= vmax:
-            raise ValueError("vmin 必须小于 vmax")
-        work["fmt"] = FMT_CHOICES.get(self.param_vars["fmt"].get(), "3f")
-        # 自定义颜色优先；否则按输入的名称取预置色图
-        if cmap_name.strip().startswith("自定义"):
-            work["cmap"] = ("custom", [tuple(c) for c in self.custom_colors])
-        elif cmap_name.strip():
-            work["cmap"] = cmap_name.strip()
-        else:
-            work["cmap"] = ("custom", [tuple(c) for c in self.custom_colors])
-
-        # ---- 高级参数（渲染自由度）----
-        work["layout"] = LAYOUT_CHOICES.get(self.param_vars["layout"].get(),
-                                            "classic")
-        work["kind"] = KIND_CHOICES.get(self.param_vars["kind"].get(),
-                                        "heatmap")
-        work["font"] = self.param_vars["font"].get().strip() or "Arial"
-        edge = EDGE_CHOICES.get(self.param_vars["edge"].get(), "none")
-        work["edge"] = None if edge == "none" else (0.5, "black")
-        work["empty"] = EMPTY_CHOICES.get(self.param_vars["empty"].get(),
-                                          "#f0f0f0")
-        work["dpi"] = DPI_CHOICES.get(self.param_vars["dpi"].get(), 100)
-        fs = self.param_vars["figsize"].get().strip().lower().replace("×", "x")
-        try:
-            fw, fh = (float(value.strip()) for value in fs.split("x"))
-        except (ValueError, TypeError) as exc:
-            raise ValueError("画幅尺寸应为 宽x高（英寸），例如 10x5") from exc
-        if not (math.isfinite(fw) and math.isfinite(fh) and 2 <= fw <= 40 and 1 <= fh <= 40):
-            raise ValueError("画幅宽度须为 2～40 英寸，高度须为 1～40 英寸")
-        work["figsize"] = (fw, fh)
-        work["bbox_tight"] = False
-        for key, var in self.bool_vars.items():
-            work[key] = var.get()
-        for key in ("symbol_fs", "number_fs", "value_fs"):
-            try:
-                value = float(self.param_vars[key].get())
-            except ValueError as exc:
-                raise ValueError(f"{key} 必须是正数字号") from exc
-            if not math.isfinite(value) or value <= 0:
-                raise ValueError(f"{key} 必须是有限正数")
-            work[key] = value
-        from matplotlib.colors import is_color_like
-        for key, low, high in (("edge_width", 0, 20), ("value_dx", -2, 2),
-                               ("value_dy", -2, 2), ("label_wrap", 0, 200),
-                               ("cbar_fraction", .005, .5), ("cbar_pad", 0, .5),
-                               ("cbar_shrink", .05, 1)):
-            try:
-                value = float(self.param_vars[key].get())
-            except ValueError as exc:
-                raise ValueError(f"{key} 必须是数字") from exc
-            if not math.isfinite(value) or not low <= value <= high:
-                raise ValueError(f"{key} 应在 {low}～{high} 之间")
-            work[key] = value
-        if not work["label_wrap"].is_integer():
-            raise ValueError("每行字符数必须为整数")
-        work["label_wrap"] = int(work["label_wrap"])
-        color = self.param_vars["edge_color"].get().strip()
-        if not is_color_like(color):
-            raise ValueError("边框颜色无效")
-        if work["edge_width"] > 0:
-            work["edge"] = (work["edge_width"], color)
-        work["unit"] = self.param_vars["unit"].get()
-        nodes = self.param_vars["color_nodes"].get().strip()
-        if nodes:
-            try:
-                pairs = sorted((float(row.split(":", 1)[0]), row.split(":", 1)[1].strip())
-                               for row in nodes.replace("；", ";").split(";") if row.strip())
-            except (ValueError, IndexError) as exc:
-                raise ValueError("颜色节点格式：0:#0000ff;0.5:#ffffff;1:#ff0000") from exc
-            if (len(pairs) < 2 or pairs[0][0] != 0 or pairs[-1][0] != 1 or
-                    len({p for p, c in pairs}) != len(pairs) or
-                    any(not math.isfinite(p) or not 0 <= p <= 1 or not is_color_like(c) for p, c in pairs)):
-                raise ValueError("颜色节点须从 0 到 1，位置不重复，颜色有效")
-            work["cmap"] = ("custom", pairs)
-        work["cbar_orientation"] = self.param_vars["cbar_orientation"].get()
-        location = self.param_vars["cbar_location"].get()
-        work["cbar_location"] = ("bottom" if work["cbar_orientation"] == "horizontal" else "right") if location == "auto" else location
-        work["cbar_label"] = self.param_vars["cbar_label"].get()
-        # 标注图类型：注入 labels 专属默认键（浅灰底 + 深灰标注）
-        if work["kind"] == "labels":
-            work.setdefault("bg", "#f0f0f0")
-            work.setdefault("label_color", "#666666")
-            work.setdefault("label_fs", 8)
-            work.setdefault("label_dy", 0.12)
-        return work
+        return apply_custom_params(
+            style, {key: var.get() for key, var in self.param_vars.items()},
+            {key: var.get() for key, var in self.bool_vars.items()},
+            self.custom_colors, self.element_overrides, self.compat_var.get())
 
     # ------------------------------------------------------------------
     def _choose_out_dir(self):
@@ -2025,6 +2088,19 @@ def main():
                 if step == "preview":
                     if app.preview._source is None:
                         raise RuntimeError("后台预览未生成")
+                    from core.reference_image import load_reference_image
+                    reference = app.user_dir / "smoke-reference.svg"
+                    reference.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>', encoding="utf-8")
+                    image = load_reference_image(reference)
+                    if image.size != (40, 20):
+                        raise RuntimeError("SVG 样图栅格化尺寸错误")
+                    image.close()
+                    window = app._open_reference(str(reference))
+                    if window is None:
+                        raise RuntimeError("样图对照窗口创建失败")
+                    window.withdraw()
+                    window.destroy()
+                    _smoke_log("reference:passed")
                     _smoke_log("preview:passed")
                 else:
                     if not app.last_output or not os.path.isfile(app.last_output):

@@ -47,8 +47,11 @@ def test_group_edits_roundtrip_undo_and_failed_restore(app, tmp_path):
     app.data = {"Fe": "1.2500"}
     app.table.set_data(app.data)
     app._refresh_preview()
+    app._on_preview_click("Fe")
+    assert app.mark_value_var.get() == "1.2500"
     app._select_excel_group(second)
     assert app.data == {"Fe": 2}
+    assert app.mark_value_var.get() == "2"
     app._undo()
     assert app.excel_collection.active_dataset_id == first
     assert app.data == {"Fe": "1.2500"}

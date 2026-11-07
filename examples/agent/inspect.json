@@ -1,0 +1,5 @@
+{
+  "api_version": 1,
+  "action": "inspect",
+  "project": "output/agent-demo.ptproj"
+}

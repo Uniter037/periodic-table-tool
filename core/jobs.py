@@ -58,6 +58,8 @@ def _run(request, directory, connection, request_id):
                         with BytesIO() as buffer:
                             source.save(buffer, format="PNG")
                             result = {"png": buffer.getvalue(), "hits": hits}
+                            result["cbar_box"] = (list(fig.axes[1].get_position().bounds)
+                                if request["show_cbar"] and style.get("kind") == "heatmap" and len(fig.axes) > 1 else None)
                         source.close()
                     else:
                         fmt = request["format"].lower()

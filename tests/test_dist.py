@@ -37,7 +37,7 @@ def test_new_ui_module_is_discovered(tmp_path):
 def test_version_consistent():
     import re
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
-    assert version.group(1) == make_dist.VERSION == "1.7.0"
+    assert version.group(1) == make_dist.VERSION == "1.8.0"
 
 
 def test_fixture_provenance():

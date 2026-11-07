@@ -1,0 +1,26 @@
+{
+  "api_version": 1,
+  "action": "update",
+  "project": "output/agent-demo.ptproj",
+  "output_project": "output/agent-demo-updated.ptproj",
+  "expected_revision": "REPLACE_WITH_INSPECT_RESULT_REVISION",
+  "patch": {
+    "params": {
+      "fmt": "四位小数",
+      "rounding": "十进制四舍五入"
+    },
+    "data": {
+      "Fe": 0.75,
+      "H": null
+    },
+    "element_overrides": {
+      "Cu": {
+        "show_value": false,
+        "show_color": true,
+        "include_in_range": false,
+        "value_dx": 0.05,
+        "value_dy": 0
+      }
+    }
+  }
+}

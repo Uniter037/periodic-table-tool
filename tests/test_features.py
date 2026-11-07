@@ -153,6 +153,7 @@ def test_gui_preset_flow(app, tmp_path, monkeypatch):
     app._load_demo()
     app._refresh_preview_now()
     saved_data = dict(app.data)            # 记录预设保存时的数据
+    app.preset_include_data.set(True)
     app.preset_name_var.set("测试预设")
     app._preset_save()
     assert "测试预设" in app.presets.list()
