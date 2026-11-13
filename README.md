@@ -1,8 +1,21 @@
 # 元素周期表绘图工作台
 
-当前版本：v1.8.0。
+当前版本：v1.9.0。
 
-## 本版新增
+v1.9.0 新增 Agent 能力：[一次请求绘图、Excel 数据组批量导出及调用优化](docs/AGENT-WORKFLOWS.md)。源码与 v1.9.0 EXE 均支持这些功能；调用前用 `describe` 查询能力，旧版 EXE 需更新。
+
+v1.9.0 新增排版辅助：在图形设置中可开关“检查标注重叠”（默认开启），预览底部提示可能重叠或越界的元素，保留手动字号和位置。颜色条设置新增“隐藏颜色条时保持主图位置和大小”（默认关闭）；配合“固定画幅”使用，便于生成位置一致的对照图。Agent 导出响应包含 `layout_issues`，详见上述调用文档。
+
+开发与交接：[当前版本架构、模块职责、数据契约和扩展指南](docs/ARCHITECTURE-HANDOFF.md) · [环境、日志排错、测试与发行操作](docs/HANDOFF-OPERATIONS.md)。交接文档区分当前实现与后续规划，新接手的开发者或 Agent 建议从这里开始。
+
+## v1.9.0 新增
+
+- Agent `render` 一次请求直接成图，无需持久化项目；`batch_export` 对项目内同一指标的 Excel 数据组共用色标导出，最多 100 组。
+- `describe` 新增 `parameter_options`、`action_required_fields` 和 `action_metadata`；`REVISION_CONFLICT` 提供预期/当前 revision 与恢复提示，冲突后仍须重新检查项目。
+- 标注重叠/越界诊断默认开启（`display.check_label_overlap=true`），Agent 导出返回 `layout_issues`；提示不会自动移动文字或改变数据。
+- 隐藏颜色条时保留主图位置和大小为可选项（`display.preserve_cbar_space=false`，默认关闭）；对照图请配合固定画幅。
+
+## v1.8.0 已有功能
 
 - 科学模式修正锕系范围为 89～103，默认采用十进制四舍五入；可选原脚本浮点舍入，原脚本兼容样式保留历史输出。
 - 单元素显示、着色、参与自动范围分别设置，隐藏保留原值；标注和颜色条可拖动，支持撤销与项目保存。

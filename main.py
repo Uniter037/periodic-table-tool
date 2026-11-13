@@ -223,7 +223,7 @@ class DataTable(tk.Frame):
 class App(EditControlsMixin, tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("元素周期表绘图工作台 · v1.8.0")
+        self.title("元素周期表绘图工作台 · v1.9.0")
         self.geometry("1180x760")
         self.minsize(800, 560)
         self._refresh_job = None
@@ -693,6 +693,8 @@ class App(EditControlsMixin, tk.Tk):
             ("show_symbol", "显示元素符号", graph, True),
             ("show_number", "显示原子序数", graph, True),
             ("show_value", "显示数值 / 标注", graph, True),
+            ("check_label_overlap", "检查标注重叠", graph, True),
+            ("preserve_cbar_space", "隐藏颜色条时保持主图位置和大小", colors, False),
             ("transparent", "透明背景", export, False)):
             var = tk.BooleanVar(value=default)
             self.bool_vars[key] = var
@@ -901,6 +903,9 @@ class App(EditControlsMixin, tk.Tk):
                 work["cbar"] = {**cfg, "labels": [""] * len(cfg["ticks"])}
             else:
                 work["cbar"] = {"ticks": [], "labels": [], "fontsize": 8}
+        work = dict(work)
+        for key in ("preserve_cbar_space", "check_label_overlap"):
+            work[key] = self.bool_vars[key].get()
         return work
 
     def _on_style_change(self):
@@ -957,7 +962,7 @@ class App(EditControlsMixin, tk.Tk):
                              ("cbar_pad", .04), ("cbar_shrink", 1)):
             self.param_vars[key].set(str(style.get(key, default)))
         for key, var in self.bool_vars.items():
-            var.set(style.get(key, key != "transparent"))
+            var.set(style.get(key, key not in ("transparent", "preserve_cbar_space")))
         if style_id == "custom":
             self.param_vars["vmin"].set("-1")
             self.param_vars["vcenter"].set("0")
@@ -1010,7 +1015,7 @@ class App(EditControlsMixin, tk.Tk):
         if "edge" in params and "edge_width" not in params:
             self.param_vars["edge_width"].set("0.5" if params["edge"] == "黑色细线" else "0")
         for key, variable in self.bool_vars.items():
-            variable.set(payload.get("display", {}).get(key, key != "transparent") is True)
+            variable.set(payload.get("display", {}).get(key, key not in ("transparent", "preserve_cbar_space")) is True)
         self.compat_var.set(payload.get("compatibility", False) is True)
         self.show_cbar_var.set(payload.get("show_cbar", True) is True)
         self.show_cbar_labels_var.set(payload.get("show_cbar_labels", True) is True)
@@ -1856,6 +1861,7 @@ class App(EditControlsMixin, tk.Tk):
                 self._sync_preview_edit_controls(self._job_request["style"], result.get("cbar_box"))
                 self._preview_error = None
                 warnings = range_warnings(self._job_request["style"], self._job_request["data"])
+                warnings.extend(result.get("layout_warnings", []))
                 self.status_var.set("注意：" + "；".join(warnings) if warnings else "预览已更新 · 滚轮缩放 / 右键平移")
             else:
                 import shutil

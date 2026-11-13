@@ -1,0 +1,19 @@
+{
+  "api_version": 1,
+  "action": "render",
+  "output_dir": "output/agent-render",
+  "formats": ["png", "svg", "pdf"],
+  "base": "agent_demo",
+  "patch": {
+    "mode_id": "custom",
+    "data": {"H": 0, "Ni": 0.5, "Cu": 0.73925},
+    "params": {
+      "vmin": "0", "vcenter": "0.5", "vmax": "1",
+      "fmt": "四位小数", "figsize": "254x127 mm", "dpi": "150"
+    },
+    "cbar_override": {
+      "ticks": [0, 0.5, 1], "labels": ["0", "0.5", "1"],
+      "visible": [true, true, true], "fontsize": 8
+    }
+  }
+}

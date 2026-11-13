@@ -47,6 +47,8 @@ def _run(request, directory, connection, request_id):
                 fig = render_table(style, data, title=request.get("title") or None,
                                    show_cbar=request["show_cbar"], figsize=style.get("figsize", (10, 5)))
                 try:
+                    from .layout_diagnostics import inspect_layout, layout_warnings
+                    issues = inspect_layout(fig) if style.get('check_label_overlap', True) else []
                     if mode == "preview":
                         # Keep physical layout, cap only the preview raster resolution.
                         fig.set_dpi(min(style.get("dpi", 100), 100,
@@ -58,6 +60,8 @@ def _run(request, directory, connection, request_id):
                         with BytesIO() as buffer:
                             source.save(buffer, format="PNG")
                             result = {"png": buffer.getvalue(), "hits": hits}
+                            result['layout_issues'] = issues
+                            result['layout_warnings'] = layout_warnings(issues)
                             result["cbar_box"] = (list(fig.axes[1].get_position().bounds)
                                 if request["show_cbar"] and style.get("kind") == "heatmap" and len(fig.axes) > 1 else None)
                         source.close()

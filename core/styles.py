@@ -474,14 +474,18 @@ def render_table(style: dict, data: dict, title: str = None,
                     kwargs["color"] = style["label_color"]
                 if role == "value" and measurement and len(args) >= 3 and args[2] is not None:
                     import textwrap
-                    x, y, value, *rest = args
+                    text_x, text_y, value, *rest = args
                     value = str(value) + (style.get("unit", "") if kind == "heatmap" else "")
                     wrap = int(style.get("label_wrap", 0))
                     if wrap > 0:
                         value = "\n".join(textwrap.fill(line, wrap) for line in value.split("\n"))
-                    args = (x + style.get("value_dx", 0) + element_edit.get("value_dx", 0),
-                            y + style.get("value_dy", 0) + element_edit.get("value_dy", 0), value, *rest)
-            return ax.text(*args, **kwargs)
+                    args = (text_x + style.get("value_dx", 0) + element_edit.get("value_dx", 0),
+                            text_y + style.get("value_dy", 0) + element_edit.get("value_dy", 0), value, *rest)
+            text = ax.text(*args, **kwargs)
+            text._ptable_element = "|".join(map(str, symbol)) if isinstance(symbol, tuple) else str(symbol)
+            text._ptable_role = role
+            text._ptable_cell = (x, y, 1, 1)
+            return text
 
         ax.set_xlim(0, xy_bounds[0])
         ax.set_ylim(0, xy_bounds[1])
@@ -494,7 +498,7 @@ def render_table(style: dict, data: dict, title: str = None,
             cmap = _make_cmap(style)
             norm = _make_norm(style)
             mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
-            if show_cbar:
+            if show_cbar or style.get("preserve_cbar_space", False):
                 cbar_style = style.get("cbar_style", "standard")
                 orientation = style.get("cbar_orientation", "vertical") if custom else "vertical"
                 if custom and style.get("cbar_box") is not None:
@@ -680,6 +684,14 @@ def render_table(style: dict, data: dict, title: str = None,
             cbar.ax.set_box_aspect(None)
             cbar.ax.set_aspect("auto")
             cbar.ax.set_position(style["cbar_box"])
+
+        if cbar is not None and not show_cbar:
+            # Resolve aspect/layout before deleting the axes. Colorbar.remove()
+            # restores the old subplot specification and would undo reservation.
+            fig.canvas.draw()
+            bounds = ax.get_position().frozen()
+            fig.delaxes(cbar.ax)
+            ax.set_position(bounds)
 
         return fig
     except BaseException:

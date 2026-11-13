@@ -22,6 +22,8 @@ ACTIONS = {
     "update": {"project", "output_project", "expected_revision", "patch", "dataset_id"},
     "excel_preview": {"workbook", "sheet", "elements_range", "conditions_range", "values_range", "direction"},
     "import_excel": {"project", "output_project", "expected_revision", "workbook", "sheet", "elements_range", "conditions_range", "values_range", "direction", "dataset_index"},
+    "render": {"patch", "output_dir", "formats", "base", "allow_out_of_range"},
+    "batch_export": {"project", "expected_revision", "dataset_ids", "output_dir", "formats", "base", "allow_out_of_range"},
     "export": {"project", "expected_revision", "output_dir", "formats", "base", "allow_out_of_range"},
 }
 PATCH_FIELDS = {"mode_id", "params", "display", "data", "replace_data", "element_overrides",
@@ -97,12 +99,18 @@ def _load(request):
     return path, document, _fingerprint(raw)
 
 
+def _revision_conflict(expected, current, message):
+    raise ApiError("REVISION_CONFLICT", message,
+                   {"expected_revision": expected, "current_revision": current,
+                    "recovery": "inspect_and_review"})
+
+
 def _expect(request, revision, required=True):
     expected = request.get("expected_revision")
     if required and not isinstance(expected, str):
         raise ApiError("REVISION_REQUIRED", "inspect first, then pass expected_revision for project changes")
     if expected is not None and expected != revision:
-        raise ApiError("REVISION_CONFLICT", "Project changed; inspect again before applying changes")
+        _revision_conflict(expected, revision, "Project changed; inspect again before applying changes")
 
 
 def _write_new(path, document):
@@ -128,8 +136,9 @@ def _save_update(request, path, document, revision):
     from core.document import write_document
     _validate_document(document)
     target = _path(request.get("output_project", str(path)), "output_project")
-    if _fingerprint(_read(path)) != revision:
-        raise ApiError("REVISION_CONFLICT", "Project changed while preparing the update")
+    current_revision = _fingerprint(_read(path))
+    if current_revision != revision:
+        _revision_conflict(revision, current_revision, "Project changed while preparing the update")
     if target != path:
         return target, _write_new(target, document)
     # A lock serializes cooperating API writers. GUI edits are not live-synchronized.
@@ -140,8 +149,9 @@ def _save_update(request, path, document, revision):
         raise ApiError("PROJECT_BUSY", "Another API writer holds the project lock") from exc
     try:
         os.close(fd)
-        if _fingerprint(_read(path)) != revision:
-            raise ApiError("REVISION_CONFLICT", "Project changed before writing")
+        current_revision = _fingerprint(_read(path))
+        if current_revision != revision:
+            _revision_conflict(revision, current_revision, "Project changed before writing")
         write_document(path, document)
         return path, _fingerprint(_read(path))
     finally:
@@ -207,10 +217,83 @@ def _excel_preview(request):
                            request.get("direction", "matrix_rows"))
 
 
+def _export_payloads(request, payload, items):
+    """Preflight every group's data, then save as one rollback unit.
+
+    items contains (metadata, output stem suffix, data) tuples. Resolve the
+    current style once so all groups retain exactly the same fixed scale.
+    """
+    from core.styles import render_table
+    from core.scientific import range_warnings
+    from core.dataio import convert_data
+    from core.imaging import save_options
+    from core.saver import save_figure
+    from .project_codec import resolve_payload
+    import matplotlib.pyplot as plt
+
+    style = resolve_payload(payload)
+    formats = request.get("formats", [payload.get('output_format', 'svg')])
+    if not isinstance(formats, list) or not formats or any(f not in ('png', 'svg', 'pdf') for f in formats) or len(set(formats)) != len(formats):
+        raise ApiError("INVALID_REQUEST", "formats must be a nonempty unique list of png/svg/pdf")
+    base = request.get("base", "periodic_table")
+    if not isinstance(base, str) or not re.fullmatch(r"[\w-]{1,80}", base):
+        raise ApiError("INVALID_REQUEST", "base must be 1–80 letters/digits/underscores/hyphens")
+    allow = request.get('allow_out_of_range', False)
+    if type(allow) is not bool:
+        raise ApiError('INVALID_REQUEST', 'allow_out_of_range must be boolean')
+    directory = _path(request.get('output_dir', payload.get('output_dir') or 'output'), 'output_dir')
+    figsize = style.get('figsize', (10, 5))
+    if figsize[0] * figsize[1] * style.get('dpi', 100)**2 > 64_000_000:
+        raise ApiError('OUTPUT_TOO_LARGE', 'Requested canvas exceeds 64 million pixels')
+    prepared = []
+    for metadata, suffix, raw_data in items:
+        data = convert_data(raw_data, style['kind'])
+        if not data:
+            raise ApiError("EMPTY_DATA", "Project has no plot data")
+        warnings = range_warnings(style, data)
+        if warnings and not allow:
+            raise ApiError('RANGE_WARNING', '; '.join(warnings) + '; set allow_out_of_range=true to acknowledge')
+        prepared.append((metadata, suffix, data, warnings))
+    paths = []
+    results = []
+    # Render/save failures, including metadata failures, roll back all files
+    # returned by save_figure, which cleans its own failed partial file.
+    try:
+        for metadata, suffix, data, warnings in prepared:
+            before = set(plt.get_fignums())
+            try:
+                fig = render_table(style, data,
+                                   title=payload.get('params', {}).get('title') if style.get('customizable') else None,
+                                   show_cbar=payload.get('show_cbar', True), figsize=figsize)
+                files = []
+                from core.layout_diagnostics import inspect_layout, layout_warnings
+                layout_issues = inspect_layout(fig) if style.get('check_label_overlap', True) else []
+                stem = base + ('_' + suffix if suffix else '')
+                # Leave space for timestamp, collision counter and extension.
+                # The numbered prefix keeps truncated batch names distinct.
+                while suffix and len(stem.encode('utf-16-le')) // 2 > 200:
+                    stem = stem[:-1]
+                for fmt in formats:
+                    path = Path(save_figure(fig, str(directory), stem, fmt, **save_options(style)))
+                    paths.append(path)
+                    files.append({'path': str(path), 'bytes': path.stat().st_size,
+                                  'sha256': _fingerprint(path.read_bytes())})
+                results.append({**metadata, 'warnings': warnings + layout_warnings(layout_issues),
+                                'layout_issues': layout_issues, 'files': files})
+            finally:
+                for number in set(plt.get_fignums()) - before:
+                    plt.close(number)
+        return results
+    except Exception:
+        for path in paths:
+            path.unlink(missing_ok=True)
+        raise
+
+
 def _execute(request):
     import matplotlib
     matplotlib.use('Agg')
-    from .project_codec import default_payload, resolve_payload
+    from .project_codec import default_payload
     from .dataset_collection import DatasetCollection
     if not isinstance(request, dict) or type(request.get("api_version")) is not int or request["api_version"] != API_VERSION:
         raise ApiError("API_VERSION", "Request must be an object with api_version=1")
@@ -227,12 +310,32 @@ def _execute(request):
         from .project_codec import PARAM_CHOICES, PARAM_DEFAULTS, DISPLAY_DEFAULTS
         return {"actions": {name: sorted(fields) for name, fields in ACTIONS.items()},
                 "parameter_choices": PARAM_CHOICES, "parameter_defaults": PARAM_DEFAULTS,
+                "parameter_options": {key: list(values) for key, values in PARAM_CHOICES.items()},
+                "action_required_fields": {
+                    name: (["project", "expected_revision", "workbook"] if name == "import_excel" else
+                           ["project", "expected_revision"] if name == "update" else
+                           ["project"] if name in ("create", "inspect", "validate", "export", "batch_export") else
+                           ["workbook"] if name == "excel_preview" else [])
+                    for name in ACTIONS},
+                "action_metadata": {
+                    "render": {"stateless": True, "mutates_project": False,
+                               "description": "Apply patch to default_payload and export without a project file.",
+                               "result_fields": ["warnings", "layout_issues", "files"]},
+                    "batch_export": {"mutates_project": False, "max_groups": 100,
+                                     "same_metric_id": True, "fixed_scale": True,
+                                     "description": "Export selected Excel datasets in request order (all in collection order by default), preserving manual edits and current attached data. All groups share the current style and scale. Validate all groups before writing; roll back own files on failure.",
+                                     "result_fields": ["project", "revision", "dataset_ids", "datasets", "warnings", "files"]}},
                 "display_defaults": DISPLAY_DEFAULTS,
                 "patch_fields": sorted(PATCH_FIELDS), "default_payload": default_payload(),
                 "styles": [{"id": key, "name": style["name"], "kind": style["kind"]} for key, style in STYLES.items() if style['kind'] != 'cmap'],
                 "concurrency": "Pass inspect.revision as expected_revision. API writers are serialized; close or reload GUI projects when editing externally."}
     if action == "excel_preview":
         return _excel_preview(request)
+    if action == "render":
+        document = {"current": default_payload(), "styles": {}}
+        _patch(document, request.get('patch', {}))
+        return _export_payloads(request, document['current'],
+                                [({}, '', document['current'].get('data', {}))])[0]
     if action == "create":
         path = _path(request.get("project"), "project")
         payload = default_payload()
@@ -244,7 +347,7 @@ def _execute(request):
     path, document, revision = _load(request)
     if action == "inspect":
         return _summary(path, document, revision)
-    _expect(request, revision, required=action not in ("export", "validate"))
+    _expect(request, revision, required=action not in ("export", "batch_export", "validate"))
     if action in ("update", "import_excel", "validate"):
         collection = _validate_document(document)
         if document.get("excel_attached"):
@@ -277,47 +380,34 @@ def _execute(request):
         target, new_revision = _save_update(request, path, document, revision)
         return {**_summary(target, document, new_revision), **details}
     if action == "export":
-        from core.styles import render_table
-        from core.scientific import range_warnings
-        from core.dataio import convert_data
-        from core.imaging import save_options
-        from core.saver import save_figure
-        import matplotlib.pyplot as plt
-        payload = document['current']
-        style = resolve_payload(payload)
-        data = convert_data(payload.get('data', {}), style['kind'])
-        if not data:
-            raise ApiError("EMPTY_DATA", "Project has no plot data")
-        formats = request.get("formats", [payload.get('output_format', 'svg')])
-        if not isinstance(formats, list) or not formats or any(f not in ('png','svg','pdf') for f in formats) or len(set(formats)) != len(formats):
-            raise ApiError("INVALID_REQUEST", "formats must be a nonempty unique list of png/svg/pdf")
-        base = request.get("base", "periodic_table")
-        if not isinstance(base, str) or not re.fullmatch(r"[\w-]{1,80}", base):
-            raise ApiError("INVALID_REQUEST", "base must be 1–80 letters/digits/underscores/hyphens")
-        warnings = range_warnings(style, data)
-        allow = request.get('allow_out_of_range', False)
-        if type(allow) is not bool:
-            raise ApiError('INVALID_REQUEST', 'allow_out_of_range must be boolean')
-        if warnings and not allow:
-            raise ApiError('RANGE_WARNING', '; '.join(warnings) + '; set allow_out_of_range=true to acknowledge')
-        directory = _path(request.get('output_dir', payload.get('output_dir') or 'output'), 'output_dir')
-        figsize = style.get('figsize', (10,5))
-        if figsize[0]*figsize[1]*style.get('dpi',100)**2 > 64_000_000:
-            raise ApiError('OUTPUT_TOO_LARGE', 'Requested canvas exceeds 64 million pixels')
-        fig = render_table(style, data, title=payload.get('params',{}).get('title') if style.get('customizable') else None,
-                           show_cbar=payload.get('show_cbar',True), figsize=figsize)
-        paths = []
-        try:
-            for fmt in formats:
-                paths.append(Path(save_figure(fig,str(directory),base,fmt,**save_options(style))))
-            return {'project':str(path), 'revision':revision,'warnings':warnings,
-                    'files':[{'path':str(p),'bytes':p.stat().st_size,'sha256':_fingerprint(p.read_bytes())} for p in paths]}
-        except Exception:
-            for p in paths:
-                p.unlink(missing_ok=True)
-            raise
-        finally:
-            plt.close(fig)
+        result = _export_payloads(request, document['current'],
+                                  [({}, '', document['current'].get('data', {}))])[0]
+        return {'project': str(path), 'revision': revision, **result}
+    if action == "batch_export":
+        from .batch_datasets import plan_dataset_batch
+        collection = _validate_document(document)
+        if document.get('excel_attached'):
+            collection.set_manual_data(document['current'].get('data', {}))
+        snapshot = collection.snapshot()
+        ids = request.get('dataset_ids', [item['id'] for item in snapshot['datasets']])
+        if (not isinstance(ids, list) or not ids or len(ids) > 100 or
+                any(not isinstance(key, str) or not key for key in ids) or
+                len(set(ids)) != len(ids)):
+            raise ApiError('INVALID_REQUEST', 'dataset_ids must select 1–100 unique dataset IDs')
+        indexed = {item['id']: item for item in snapshot['datasets']}
+        if any(key not in indexed for key in ids):
+            raise ApiError('INVALID_REQUEST', 'dataset_ids contains an unknown dataset ID')
+        if len({indexed[key]['metric_id'] for key in ids}) != 1:
+            raise ApiError('INVALID_REQUEST', 'batch_export requires datasets with the same metric_id')
+        planned = plan_dataset_batch(snapshot, ids)
+        # Bound UTF-16 filename length even for long Unicode names and base.
+        items = [({'dataset_id': key, 'name': name}, f'{index:03d}_{name[:60]}', data)
+                 for index, (key, (name, data)) in enumerate(zip(ids, planned), 1)]
+        datasets = _export_payloads(request, document['current'], items)
+        return {'project': str(path), 'revision': revision, 'dataset_ids': ids,
+                'datasets': datasets,
+                'warnings': [warning for result in datasets for warning in result['warnings']],
+                'files': [file for result in datasets for file in result['files']]}
     raise ApiError('UNKNOWN_ACTION', action)
 
 

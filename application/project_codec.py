@@ -21,7 +21,7 @@ PARAM_CHOICES = dict(layout=LAYOUT_CHOICES, kind=KIND_CHOICES,
                     cbar_orientation=('vertical', 'horizontal'),
                     cbar_location=('auto', 'left', 'right', 'top', 'bottom'))
 DISPLAY_DEFAULTS = dict(show_symbol=True, show_number=True, show_value=True,
-                        transparent=False)
+                        transparent=False, preserve_cbar_space=False, check_label_overlap=True)
 _BASE_PARAMS = dict(cmap='coolwarm', vmin='-1', vcenter='0', vmax='1',
     layout='展开 8-9 行（经典）', kind='热力图', fmt='三位小数', font='Arial',
     edge='无边框', empty='浅灰', dpi='100', figsize='10x5', title='',
@@ -89,6 +89,8 @@ def _resolve(payload):
                          dict(ticks=[], labels=[], fontsize=8))
     # show_cbar remains a separate render_table argument; also expose it here.
     style['show_cbar'] = payload['show_cbar']
+    style['preserve_cbar_space'] = payload['display']['preserve_cbar_space']
+    style['check_label_overlap'] = payload['display']['check_label_overlap']
     return style
 
 
