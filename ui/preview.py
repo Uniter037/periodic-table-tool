@@ -9,8 +9,10 @@ from core.imaging import rasterize
 
 
 class PreviewCanvas(tk.Frame):
-    def __init__(self, master, on_click=None, on_move=None, on_colorbar_move=None, **kw):
+    def __init__(self, master, on_click=None, on_move=None, on_colorbar_move=None, on_zoom=None, **kw):
         super().__init__(master, **kw)
+        self.on_zoom = on_zoom
+        self._actual_pixels = False
         self.on_click = on_click
         self.on_move = on_move
         self.on_colorbar_move = on_colorbar_move
@@ -24,10 +26,10 @@ class PreviewCanvas(tk.Frame):
         self._pixel_hits = {}
         self.zoom = 1.0
         self.pan = [0, 0]
-        self._surface = tk.Canvas(self, highlightthickness=0, background="#e4e8ee",
+        self._surface = tk.Canvas(self, highlightthickness=0, background="#e5e7eb",
                                   width=100, height=100)
         self._surface.pack(fill="both", expand=True)
-        self._paper = self._surface.create_rectangle(0, 0, 0, 0, fill="white", outline="#c7cdd6")
+        self._paper = self._surface.create_rectangle(0, 0, 0, 0, fill="white", outline="#d1d5db")
         self._item = self._surface.create_image(0, 0, anchor="nw")
         self._stale = tk.Label(self, text="旧预览 · 当前设置或数据无效，请查看底部提示", bg="#fff1d6", fg="#8a3b12")
         self._surface.bind("<Configure>", self.resize)
@@ -44,14 +46,39 @@ class PreviewCanvas(tk.Frame):
 
     def fit(self):
         self._cancel_drag()
+        self._actual_pixels = False
         self.zoom, self.pan = 1.0, [0, 0]
         self._display_box = None
         self.resize()
 
-    def _wheel(self, event):
+    def actual_size(self):
+        """Show one source pixel per canvas pixel, independent of fit and UI scale."""
         self._cancel_drag()
-        self.zoom = max(.25, min(8, self.zoom * (1.15 if event.delta > 0 else 1 / 1.15)))
+        self._actual_pixels = True
+        self.zoom, self.pan = 1.0, [0, 0]
         self.resize()
+
+    def zoom_in(self):
+        self._zoom_by(1.15)
+
+    def zoom_out(self):
+        self._zoom_by(1 / 1.15)
+
+    def _zoom_by(self, factor):
+        self._cancel_drag()
+        self.zoom = max(.25, min(8, self.zoom * factor))
+        self.resize()
+
+    def _wheel(self, event):
+        if event.delta:
+            self._zoom_by(1.15 if event.delta > 0 else 1 / 1.15)
+
+    @property
+    def zoom_label(self):
+        """Readable source-pixel magnification, suitable for a toolbar label."""
+        if self._source is None or self._display_box is None:
+            return "—"
+        return f"{self._display_box[2] / self._source.width:.0%}"
 
     def _pan_start(self, event):
         self._cancel_drag()
@@ -133,7 +160,8 @@ class PreviewCanvas(tk.Frame):
             return
         width, height = self._surface.winfo_width(), self._surface.winfo_height()
         sw, sh = self._source.size
-        scale = min(width / sw, height / sh) * self.zoom
+        base = 1.0 if self.__dict__.get("_actual_pixels", False) else min(width / sw, height / sh)
+        scale = base * self.zoom
         dw, dh = max(1, round(sw * scale)), max(1, round(sh * scale))
         box = ((width - dw) // 2 + self.pan[0], (height - dh) // 2 + self.pan[1], dw, dh)
         if box == self._display_box:
@@ -144,6 +172,9 @@ class PreviewCanvas(tk.Frame):
         self._position_image(box, photo)
         self._photo, self._display_box = photo, box
         self._draw_overlays()
+        callback = self.__dict__.get("on_zoom")
+        if callback is not None:
+            callback(self.zoom_label)
 
     def _position_image(self, box, photo):
         left, top, width, height = box
@@ -209,13 +240,13 @@ class PreviewCanvas(tk.Frame):
         selected = self.__dict__.get('_selected')
         for rect, symbol in self._pixel_hits.items():
             if symbol == selected:
-                boxes.append((rect, '#1875ef', {}))
+                boxes.append((rect, '#2563eb', {}))
         bar = self.__dict__.get('_colorbar_box')
         if bar is not None and self._can_edit():
-            boxes.append((self._bar_pixels(bar), '#e08020', {}))
+            boxes.append((self._bar_pixels(bar), '#2563eb', {}))
         target = self.__dict__.get('_drag_target')
         if target is not None and self._can_edit():
-            boxes.append((target, '#1875ef', {'dash': (5, 3)}))
+            boxes.append((target, '#2563eb', {'dash': (5, 3)}))
         left, top, width, height = self._display_box
         sw, sh = self._source.size
         for (x0, y0, x1, y1), color, options in boxes:

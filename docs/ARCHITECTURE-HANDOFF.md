@@ -81,6 +81,9 @@ flowchart TD
 | `ui/import_wizard.py` | Excel 工作表/区域选择和预览，确认后由调用方提交 |
 | `ui/reference_view.py` | 样图与当前快照对照，独立视图及手动刷新 |
 | `ui/scrolling.py`, `ui/workspace.py` | 可滚动控件与工作区支持 |
+| `ui/theme.py`（源码界面改版） | 集中定义浅色主题、强调色与随界面缩放的字体/控件样式，不修改绘图字体或导出参数 |
+| `ui/settings_panel.py`（源码界面改版） | 可折叠设置分组和局部搜索；定位时展开分组、选择页签并聚焦字段，不重建控件或重写参数 |
+| `ui/layout_issues.py`（源码界面改版） | 展示渲染诊断并通过回调定位有效元素；每次更新替换旧行及回调映射，不执行排版修正 |
 | `application/project_codec.py` | 默认 payload、完整校验、从项目解析渲染 style；无 Tk 依赖 |
 | `application/agent_api.py` | 版本化请求、patch、文件指纹、写入保护、导出、统一响应 |
 | `application/excel_import.py` | 读取协调、显式区域映射、诊断、生成预览 DTO；只读，不直接提交 GUI |

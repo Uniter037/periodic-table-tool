@@ -33,6 +33,9 @@ def test_every_settings_page_scrolls_to_last_control(app):
     app._apply_layout()
     app.deiconify()
     app.update()
+    if not app._compact_settings_open:
+        app._toggle_settings()
+        app.update()
     try:
         assert len(app.settings_notebook.tabs()) == 3
         for page in app.settings_pages.values():

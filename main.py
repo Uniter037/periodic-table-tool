@@ -69,6 +69,10 @@ from core.jobs import RenderJob
 from infrastructure.diagnostics import DiagnosticService, DiagnosticSettings
 from ui.preview import PreviewCanvas
 from ui.scrolling import ScrollableFrame
+from ui.theme import apply_theme, apply_scale as apply_theme_scale
+from ui.dpi import enable_high_dpi
+from ui.settings_panel import CollapsibleSection, SettingsSearch
+from ui.layout_issues import LayoutIssuesPanel
 from ui.edit_controls import EditControlsMixin, parse_figure_size, parse_box
 _smoke_log("import:after_core")
 
@@ -222,9 +226,11 @@ class DataTable(tk.Frame):
 # ---------------------------------------------------------------------------
 class App(EditControlsMixin, tk.Tk):
     def __init__(self):
+        dpi_status = enable_high_dpi()
         super().__init__()
+        self.dpi_status = dpi_status
         self.title("元素周期表绘图工作台 · v1.9.0")
-        self.geometry("1180x760")
+        self.geometry("1440x860")
         self.minsize(800, 560)
         self._refresh_job = None
         self._ratio_job = None
@@ -256,6 +262,7 @@ class App(EditControlsMixin, tk.Tk):
         self._left = None
         self._right = None
         self._current_layout = None          # 当前实际生效的布局
+        self._compact_settings_open = False
         self.layout_mode = "auto"            # 用户选择：auto / split-h / split-v
         self.scale_mode = "auto"             # 界面缩放：auto 或 "0.8"/"1.0"/"1.25"/"1.5"
         self.preview_ratio = 0.72             # 预览区域高度占比（右侧上部）
@@ -431,34 +438,74 @@ class App(EditControlsMixin, tk.Tk):
         if self._main is None:
             return
         layout = self._effective_layout()
+        self._layout_toolbar()
         if hasattr(self, "dataset_bar"):
             if layout == "split-v" and self.winfo_height() < 700:
                 self.dataset_bar.pack_forget()
             elif not self.dataset_bar.winfo_manager():
                 self.dataset_bar.pack(side="top", fill="x", before=self._main)
-        if layout == "split-v":
-            self._left.configure(height=max(100, min(170, round(self.winfo_height() * .18))))
-        if self._right is not None and self._right.panes():
-            self._right.paneconfigure(self._right.panes()[0], minsize=220 if layout == "split-v" and self.winfo_height() < 700 else 252)
         if layout == self._current_layout:
             return
         self._current_layout = layout
         main = self._main
+        self._left.place_forget()
+        self._left.grid_forget()
         for index in (0, 1):
             main.rowconfigure(index, weight=0, minsize=0)
             main.columnconfigure(index, weight=0, minsize=0)
+        for pane in self._right.panes():
+            self._right.forget(pane)
         if layout == "split-h":
+            self.preview_heading.pack(fill='x', pady=(0, 6), before=self.preview)
+            self.compact_reference.pack_forget()
             main.rowconfigure(0, weight=1)
-            main.columnconfigure(1, weight=1)
-            self._left.configure(width=330, height=200)
-            self._left.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
-            self._right.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+            main.columnconfigure(0, weight=1)
+            self._left.configure(width=340, height=200)
+            self._left.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=0)
+            self._right.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+            self._right.configure(orient="horizontal")
+            self._right.add(self.data_notebook, minsize=240, width=260, stretch="never")
+            self._right.add(self.preview_frame, minsize=320, stretch="always")
+            for label in self.data_heading:
+                label.pack(anchor='w', before=self.table, pady=(0, 4))
         else:
+            self.preview_heading.pack_forget()
+            self.compact_reference.pack(side='right')
             main.columnconfigure(0, weight=1)
             main.rowconfigure(1, weight=1)
-            self._left.configure(height=max(100, min(170, round(self.winfo_height() * .18))))
-            self._left.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
+            self._left.configure(height=170)
+            if self._compact_settings_open:
+                self._left.place(relx=1, y=0, anchor='ne', width=350, relheight=1)
+                self._left.lift()
             self._right.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+            self._right.configure(orient="vertical")
+            self._right.add(self.preview_frame, minsize=180, stretch="always")
+            self._right.add(self.data_notebook, minsize=205, height=205, stretch="never")
+            for label in self.data_heading:
+                label.pack_forget()
+        self._schedule_ratio()
+
+    def _toggle_settings(self):
+        if self._effective_layout() == "split-v":
+            self._compact_settings_open = not self._compact_settings_open
+            self._current_layout = None
+            self._apply_layout()
+        else:
+            self.settings_notebook.select(0)
+            self.settings_search.entry.focus_set()
+
+    def _layout_toolbar(self):
+        if not hasattr(self, 'toolbar_buttons'):
+            return
+        available = max(1, self.winfo_width() - 24)
+        row = col = used = 0
+        for button in self.toolbar_buttons.values():
+            width = button.winfo_reqwidth() + 6
+            if used and used + width > available:
+                row, col, used = row + 1, 0, 0
+            button.grid(row=row, column=col, padx=(0, 6), pady=2, sticky='w')
+            used += width
+            col += 1
 
     def _on_window_resize(self, event):
         if event.widget is not self:
@@ -509,22 +556,31 @@ class App(EditControlsMixin, tk.Tk):
             style.configure("Treeview.Heading", font=self._app_font)
         except tk.TclError:
             pass
+        apply_theme_scale(self, self._app_font, scale)
         if self._current_layout == "split-h":
-            self._left.configure(width=round(330 * max(1.0, scale / 1.1)))
+            self._left.configure(width=round(340 * max(1.0, scale / 1.1)))
+        self._layout_toolbar()
         self._resize_preview()
 
     def _apply_preview_ratio(self):
         """调节真实可拖动的预览 / 数据分隔条。"""
         if self._right is None:
             return
-        height = self._right.winfo_height()
-        if height > 1:
-            self._right.sash_place(0, 0, int(height * self.preview_ratio))
+        if self._current_layout == 'split-h':
+            width = self._right.winfo_width()
+            if width > 1:
+                self._right.sash_place(0, max(240, min(width - 328, int(width * (1 - self.preview_ratio)))), 0)
+        else:
+            height = self._right.winfo_height()
+            if height > 1:
+                self._right.sash_place(0, 0, max(180, min(height - 213, int(height * self.preview_ratio))))
 
     def _remember_preview_ratio(self, event=None):
-        height = self._right.winfo_height()
-        if height > 1:
-            self.preview_ratio = max(.35, min(.9, self._right.sash_coord(0)[1] / height))
+        vertical = self._current_layout != 'split-h'
+        length = self._right.winfo_height() if vertical else self._right.winfo_width()
+        if length > 1:
+            fraction = self._right.sash_coord(0)[1 if vertical else 0] / length
+            self.preview_ratio = max(.35, min(.9, fraction if vertical else 1 - fraction))
             self.ratio_var.set(self.preview_ratio)
 
     def _resize_preview(self):
@@ -551,6 +607,7 @@ class App(EditControlsMixin, tk.Tk):
 
     # ------------------------------------------------------------------
     def _build_ui(self):
+        apply_theme(self)
         menubar = tk.Menu(self)
         project_menu = tk.Menu(menubar, tearoff=0)
         project_menu.add_command(label="打开项目…", command=self._open_project)
@@ -598,19 +655,16 @@ class App(EditControlsMixin, tk.Tk):
         self.config(menu=menubar)
 
         # 工具栏与状态栏独立于可滚动内容，始终保持可见。
-        self.toolbar = ttk.Frame(self, padding=(8, 6))
+        self.toolbar = ttk.Frame(self, padding=(12, 8), style='Toolbar.TFrame')
         self.toolbar.pack(side="top", fill="x")
-        style = ttk.Style(self)
-        style.configure("TButton", padding=(8, 5))
-        style.configure("TNotebook.Tab", padding=(9, 6))
-        style.configure("Export.TButton", font=("Microsoft YaHei", 10, "bold"), padding=(14, 6))
         self.toolbar_buttons = {}
         for label, command in (("导入文件", self._import_file), ("粘贴数据", self._paste_data),
-                               ("载入示例", self._load_demo), ("导出图片", self.generate_async),
-                               ("打开输出目录", self._open_out_dir)):
+                               ("打开项目", self._open_project), ("保存项目", self._save_project),
+                               ("撤销", self._undo), ("载入示例", self._load_demo),
+                               ("绘图设置", self._toggle_settings), ("导出图片", self.generate_async),
+                               ("输出目录", self._open_out_dir)):
             button = ttk.Button(self.toolbar, text=label, command=command,
-                                style="Export.TButton" if label == "导出图片" else "TButton")
-            button.pack(side="left", padx=(0, 6))
+                                style="Accent.TButton" if label == "导出图片" else "TButton")
             self.toolbar_buttons[label] = button
         self.dataset_bar = ttk.Frame(self, padding=(8, 0, 8, 5))
         self.dataset_bar.pack(side="top", fill="x")
@@ -622,7 +676,8 @@ class App(EditControlsMixin, tk.Tk):
         self._status.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="就绪 · 导入、粘贴或载入示例开始绘图")
         self._status.columnconfigure(0, weight=1)
-        ttk.Label(self._status, textvariable=self.status_var, anchor="w").grid(row=0, column=0, sticky="ew")
+        self.status_label = ttk.Label(self._status, textvariable=self.status_var, anchor="w", style='Muted.TLabel')
+        self.status_label.grid(row=0, column=0, sticky="ew")
         self.progress = ttk.Progressbar(self._status, mode="determinate", maximum=100, length=100)
         self.progress.grid(row=0, column=1, padx=6)
         ttk.Button(self._status, text="取消任务", command=self._cancel_job).grid(row=0, column=2)
@@ -630,7 +685,10 @@ class App(EditControlsMixin, tk.Tk):
         main.pack(fill="both", expand=True)
         left = self._left = ttk.Frame(main, width=330, height=200)
         left.pack_propagate(False)
+        ttk.Label(left, text='绘图属性', style='Header.TLabel', padding=(10, 8)).pack(fill='x')
         self.settings_notebook = ttk.Notebook(left)
+        self.settings_search = SettingsSearch(left, self.settings_notebook)
+        self.settings_search.pack(fill='x', padx=8, pady=(0, 6))
         self.settings_notebook.pack(fill="both", expand=True)
         self.settings_pages = {}
         for key, label in (("figure", "图形"), ("colors", "配色 / 颜色条"),
@@ -649,6 +707,7 @@ class App(EditControlsMixin, tk.Tk):
         self.mode_combo.pack(fill="x", pady=(2, 6))
         self.mode_combo.current(list(STYLES).index("custom"))
         self.mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_style_change())
+        self.settings_search.register('mode', '绘图模式 样式', self.mode_combo, self.settings_pages['figure'])
         self.compat_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(graph, text="原脚本兼容（保留历史零值与色标行为）",
                         variable=self.compat_var, command=self._compat_changed).pack(anchor="w")
@@ -658,9 +717,30 @@ class App(EditControlsMixin, tk.Tk):
         self.hint_label.pack(fill="x", pady=(2, 8))
         self.param_vars, self.param_entries = {}, {}
         self.custom_controls = []
+        self.parameter_sections = {}
+        self._field_locations = {}
+
+        def section(parent, title):
+            block = CollapsibleSection(parent, title, expanded=False)
+            block.pack(fill='x', pady=(8, 2))
+            self.parameter_sections[title] = block
+            return block
+
+        graph_type = ttk.Frame(graph)
+        graph_type.pack(fill='x')
+        text_section = section(graph, '文字与标注')
+        edge_section = section(graph, '单元格外观')
+        text_keys = {'font', 'rounding', 'symbol_fs', 'number_fs', 'value_fs',
+                     'value_dx', 'value_dy', 'label_wrap', 'unit'}
+        edge_keys = {'edge_width', 'edge_color', 'edge', 'empty'}
 
         def field(parent, key, label, choices=None):
-            ttk.Label(parent, text=label).pack(anchor="w", pady=(5, 1))
+            owner = next((block for block in self.parameter_sections.values() if block.body is parent), None)
+            page = self.settings_pages['figure' if parent is graph_type or owner in (text_section, edge_section) else
+                                       'colors' if parent is colors or (owner and owner.master is colors) else 'export']
+            caption = ttk.Label(parent, text=label, wraplength=280)
+            caption.pack(anchor="w", pady=(5, 1))
+            parent.bind('<Configure>', lambda e, w=caption: w.configure(wraplength=max(100, e.width - 10)), add='+')
             var = tk.StringVar()
             widget = (ttk.Combobox(parent, textvariable=var, values=choices,
                                    state="readonly", width=16) if choices else
@@ -668,6 +748,8 @@ class App(EditControlsMixin, tk.Tk):
             widget.pack(fill="x", pady=(0, 2))
             var.trace_add("write", lambda *args: self._refresh_preview())
             self.param_vars[key], self.param_entries[key] = var, widget
+            self._field_locations[key] = (page, owner)
+            self.settings_search.register(key, label, widget, page, section=owner)
 
         for key, label, choices in (
             ("layout", "元素布局", list(LAYOUT_CHOICES)),
@@ -686,14 +768,15 @@ class App(EditControlsMixin, tk.Tk):
             ("unit", "数值后缀 / 单位", None),
             ("edge", "边框快捷设置（可继续调整线宽和颜色）", list(EDGE_CHOICES)),
             ("empty", "空值格颜色", list(EMPTY_CHOICES))):
-            field(graph, key, label, choices)
+            parent = text_section.body if key in text_keys else edge_section.body if key in edge_keys else graph_type
+            field(parent, key, label, choices)
         self.param_vars["edge"].trace_add("write", self._edge_preset_changed)
         self.bool_vars = {}
         for key, label, parent, default in (
-            ("show_symbol", "显示元素符号", graph, True),
-            ("show_number", "显示原子序数", graph, True),
-            ("show_value", "显示数值 / 标注", graph, True),
-            ("check_label_overlap", "检查标注重叠", graph, True),
+            ("show_symbol", "显示元素符号", text_section.body, True),
+            ("show_number", "显示原子序数", text_section.body, True),
+            ("show_value", "显示数值 / 标注", text_section.body, True),
+            ("check_label_overlap", "检查标注重叠", text_section.body, True),
             ("preserve_cbar_space", "隐藏颜色条时保持主图位置和大小", colors, False),
             ("transparent", "透明背景", export, False)):
             var = tk.BooleanVar(value=default)
@@ -702,6 +785,9 @@ class App(EditControlsMixin, tk.Tk):
             button = ttk.Checkbutton(parent, text=label, variable=var, command=self._refresh_preview)
             button.pack(anchor="w", pady=3)
             self.custom_controls.append(button)
+            owner = text_section if parent is text_section.body else None
+            page = self.settings_pages['figure' if owner else 'colors' if parent is colors else 'export']
+            self.settings_search.register(key, label, button, page, section=owner)
 
         for key, label in (("cmap", "颜色映射名称 / 自定义"), ("vmin", "最小值 vmin"),
                            ("vcenter", "中心值 vcenter（留空为线性）"), ("vmax", "最大值 vmax")):
@@ -713,7 +799,8 @@ class App(EditControlsMixin, tk.Tk):
         color_lf.pack(fill="x", pady=6)
         self.color_buttons = []
         self._build_color_row(color_lf)
-        field(colors, "color_nodes", "颜色节点：位置:颜色；例如 0:#0000ff;0.3:#ffffff;1:#ff0000")
+        color_detail = section(colors, '高级颜色节点')
+        field(color_detail.body, "color_nodes", "颜色节点：位置:颜色；例如 0:#0000ff;0.3:#ffffff;1:#ff0000")
         color_actions = ttk.Frame(color_lf)
         color_actions.pack(fill="x", pady=4)
         for label, command in (("添加", self._add_color), ("移除最后", self._remove_color),
@@ -726,10 +813,11 @@ class App(EditControlsMixin, tk.Tk):
                         command=self._refresh_preview).pack(anchor="w", pady=4)
         field(colors, "cbar_orientation", "颜色条方向", ["vertical", "horizontal"])
         field(colors, "cbar_label", "颜色条标题 / 单位")
-        field(colors, "cbar_location", "颜色条位置（自动跟随方向或手动）", ["auto", "left", "right", "top", "bottom"])
+        cbar_geometry = section(colors, '颜色条位置与比例')
+        field(cbar_geometry.body, "cbar_location", "颜色条位置（自动跟随方向或手动）", ["auto", "left", "right", "top", "bottom"])
         for key, label in (("cbar_fraction", "颜色条宽度比例"), ("cbar_pad", "颜色条间距比例"),
                            ("cbar_shrink", "颜色条长度比例")):
-            field(colors, key, label)
+            field(cbar_geometry.body, key, label)
         self.show_cbar_labels_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(colors, text="显示刻度标签（隐藏后可恢复）", variable=self.show_cbar_labels_var,
                         command=self._refresh_preview).pack(anchor="w", pady=4)
@@ -799,8 +887,12 @@ class App(EditControlsMixin, tk.Tk):
 
         # 预览获得剩余空间，数据区高度可直接拖动调整。
         right = self._right = tk.PanedWindow(main, orient="vertical", sashwidth=8,
-                                            sashrelief="raised", borderwidth=0, opaqueresize=True)
-        prev_lf = ttk.LabelFrame(right, text="实时预览 · 拖动下方分隔条调整数据区", padding=4)
+                                            sashrelief="flat", background='#e5eaf1', borderwidth=0, opaqueresize=True)
+        prev_lf = self.preview_frame = ttk.Frame(right, padding=6, style='Card.TFrame')
+        preview_heading = self.preview_heading = ttk.Frame(prev_lf, style='Card.TFrame')
+        preview_heading.pack(fill='x', pady=(0, 6))
+        ttk.Label(preview_heading, text='画布预览', style='Header.TLabel').pack(side='left')
+        ttk.Button(preview_heading, text="样图对照", command=self._open_reference).pack(side='right')
         self.preview = PreviewCanvas(prev_lf)
         self.preview.on_click = self._on_preview_click
         self.preview.on_move = self._move_element_label
@@ -809,22 +901,28 @@ class App(EditControlsMixin, tk.Tk):
         self.mark_mode_var = tk.BooleanVar(value=True)
         preview_tools = ttk.Frame(prev_lf)
         preview_tools.pack(fill="x")
-        ttk.Checkbutton(preview_tools, text="图形标注：点击编辑 / 左拖移动", variable=self.mark_mode_var,
-                        command=self._update_preview_edit_mode).pack(side="left")
-        ttk.Button(preview_tools, text="样图对照…", command=self._open_reference).pack(side="right")
+        ttk.Checkbutton(preview_tools, text="标注编辑", variable=self.mark_mode_var,
+                        command=self._update_preview_edit_mode).pack(side="left", padx=(0, 6))
+        for label, command in (('−', self.preview.zoom_out), ('+', self.preview.zoom_in),
+                               ('适应', self.preview.fit), ('1:1', self.preview.actual_size)):
+            ttk.Button(preview_tools, text=label, width=4, command=command).pack(side='left', padx=1)
+        self.compact_reference = ttk.Button(preview_tools, text='样图对照', command=self._open_reference)
         data_nb = self.data_notebook = ttk.Notebook(right)
         right.add(prev_lf, minsize=252, height=440, stretch="always")
         right.add(data_nb, minsize=150, height=180, stretch="never")
         right.bind("<ButtonRelease-1>", self._remember_preview_ratio)
         right.bind("<Map>", lambda e: self._schedule_ratio())
+        right.bind("<Configure>", lambda e: self._schedule_ratio() if e.widget is right else None)
         tab_table = ttk.Frame(data_nb, padding=4)
-        data_nb.add(tab_table, text="数据表 · 双击数值编辑")
+        data_nb.add(tab_table, text="数据")
+        self.data_heading = [ttk.Label(tab_table, text='元素数据', style='Header.TLabel'),
+                             ttk.Label(tab_table, text='双击数值编辑 · 点击画布定位元素', style='Muted.TLabel', wraplength=240)]
         ttk.Button(tab_table, text="清空数据", command=self._clear_data).pack(side="bottom", anchor="e")
         self.table = DataTable(tab_table, on_change=self._table_changed)
         self.table.tree.configure(height=5)
         self.table.pack(fill="both", expand=True)
         self.mark_tab = ttk.Frame(data_nb, padding=6)
-        data_nb.add(self.mark_tab, text="图形化标注")
+        data_nb.add(self.mark_tab, text="标注")
         mark_scroll = ScrollableFrame(self.mark_tab)
         mark_scroll.pack(fill="both", expand=True)
         mark_content = mark_scroll.content
@@ -835,19 +933,33 @@ class App(EditControlsMixin, tk.Tk):
         ttk.Label(mark_content, textvariable=self.mark_symbol_var).grid(row=0, column=1, sticky="w")
         ttk.Label(mark_content, text="数值 / 标注").grid(row=1, column=0, sticky="w", pady=4)
         entry = self.mark_entry = ttk.Entry(mark_content, textvariable=self.mark_value_var)
+        entry.configure(width=12)
         entry.grid(row=1, column=1, sticky="ew", pady=4)
         entry.bind("<Return>", lambda e: self._apply_mark())
         entry.bind("<Escape>", lambda e: self._reset_mark())
         buttons = ttk.Frame(mark_content)
         buttons.grid(row=2, column=0, columnspan=2, sticky="w")
-        ttk.Button(buttons, text="应用标注", command=self._apply_mark).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="清除该元素", command=self._clear_mark).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="取消修改", command=self._reset_mark).pack(side="left")
+        ttk.Button(buttons, text="应用", style='Accent.TButton', command=self._apply_mark).pack(side="left", padx=(0, 4))
+        ttk.Button(buttons, text="清除", command=self._clear_mark).pack(side="left", padx=(0, 4))
+        ttk.Button(buttons, text="取消", command=self._reset_mark).pack(side="left")
         ttk.Button(mark_content, text="该元素的显示 / 着色 / 位置…", command=self._show_element_options).grid(
             row=3, column=0, columnspan=2, sticky="ew", pady=3)
+        self.layout_issues_panel = LayoutIssuesPanel(data_nb, on_select=self._select_layout_issue)
+        data_nb.add(self.layout_issues_panel, text='排版检查')
         self._apply_layout()
         self._apply_scale()
         self._schedule_ratio()
+
+    def _select_layout_issue(self, symbol):
+        if self.preview._is_stale or symbol not in SYMBOLS:
+            return
+        self.mark_mode_var.set(True)
+        self._update_preview_edit_mode()
+        self._on_preview_click(symbol)
+
+    def _set_layout_issues(self, issues):
+        self.layout_issues_panel.set_issues(issues)
+        self.data_notebook.tab(self.layout_issues_panel, text=f'排版检查 ({len(issues)})' if issues else '排版检查')
 
     def _schedule_ratio(self):
         if self._ratio_job is not None:
@@ -1721,6 +1833,7 @@ class App(EditControlsMixin, tk.Tk):
         self._cancel_refresh()
         if self._restoring:
             return
+        self._set_layout_issues([])
         self._update_dataset_summary()
         self._record_document_change()
         if self._job_mode in ("export", "batch", "cmap"):
@@ -1747,6 +1860,7 @@ class App(EditControlsMixin, tk.Tk):
                         ha="center", va="center", fontsize=12)
                 ax.axis("off")
                 self.preview.show(empty_fig, {})
+                self._set_layout_issues([])
                 self._preview_error = None
                 self.preview.set_stale(False)
                 return True
@@ -1757,6 +1871,8 @@ class App(EditControlsMixin, tk.Tk):
                                show_cbar=self.show_cbar_var.get(),
                                figsize=style.get("figsize", (10, 5)))
             try:
+                from core.layout_diagnostics import inspect_layout, layout_warnings
+                issues = inspect_layout(fig) if style.get('check_label_overlap', True) else []
                 self.preview.show(fig, self._build_hit_map(), tight=style.get("bbox_tight", True))
             except Exception:
                 import matplotlib.pyplot as plt
@@ -1765,6 +1881,8 @@ class App(EditControlsMixin, tk.Tk):
             if self._preview_error is not None:
                 self.status_var.set("预览已更新")
             warnings = range_warnings(style, self._preview_data())
+            warnings.extend(layout_warnings(issues))
+            self._set_layout_issues(issues)
             if warnings:
                 self.status_var.set("注意：" + "；".join(warnings))
             self._preview_error = None
@@ -1773,6 +1891,7 @@ class App(EditControlsMixin, tk.Tk):
             return True
         except Exception as exc:
             self._preview_error = str(exc)
+            self._set_layout_issues([])
             self.preview.set_stale(True)
             self.status_var.set(f"预览失败（保留旧预览）：{exc}")
             return False
@@ -1857,6 +1976,7 @@ class App(EditControlsMixin, tk.Tk):
             result = message[1]
             if mode == "preview":
                 self.preview.show_packet(result["png"], result["hits"])
+                self._set_layout_issues(result.get('layout_issues', []))
                 self.preview.set_stale(False)
                 self._sync_preview_edit_controls(self._job_request["style"], result.get("cbar_box"))
                 self._preview_error = None
@@ -1884,6 +2004,7 @@ class App(EditControlsMixin, tk.Tk):
             self.progress.configure(value=100)
         except Exception as exc:
             self._preview_error = str(exc)
+            self._set_layout_issues([])
             self.preview.set_stale(True)
             self.status_var.set(f"任务失败：{exc}")
         finally:
