@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-import main
+from ui import legacy_workbench as main
 
 
 def test_annotation_import_keeps_lexical_values(app):

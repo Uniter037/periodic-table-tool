@@ -20,7 +20,7 @@ from core.presets import PresetStore as _PresetStore
 
 def _gui_available():
     try:
-        import main  # noqa: F401
+        from ui import legacy_workbench as main  # noqa: F401
         return True
     except Exception:
         return False
@@ -128,7 +128,7 @@ def test_gui_graphical_marking(app):
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_gui_colorbar_toggle(app, monkeypatch):
     """颜色条开关影响预览渲染结果（关闭后 fig 无颜色条）。"""
-    import main
+    from ui import legacy_workbench as main
     app.mode_combo.current(0)
     app._on_style_change()
     app._load_demo()
@@ -146,7 +146,7 @@ def test_gui_colorbar_toggle(app, monkeypatch):
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_gui_preset_flow(app, tmp_path, monkeypatch):
     """预设保存 → 修改 → 加载 恢复。"""
-    import main
+    from ui import legacy_workbench as main
     app.presets = _PresetStore(str(tmp_path))
     app.mode_combo.current(0)
     app._on_style_change()

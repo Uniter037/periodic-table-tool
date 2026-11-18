@@ -3,7 +3,7 @@ import zipfile
 
 
 def test_log_switch_applies_immediately_and_persists(app, monkeypatch, tmp_path):
-    import main
+    from ui import legacy_workbench as main
     from infrastructure.diagnostics import DiagnosticService
     monkeypatch.setattr(main, "CONFIG_PATH", str(tmp_path / "settings.json"))
     service = DiagnosticService(tmp_path / "logs")
@@ -33,7 +33,7 @@ def test_log_switch_applies_immediately_and_persists(app, monkeypatch, tmp_path)
 
 
 def test_temporary_debug_and_bundle_actions(app, monkeypatch, tmp_path):
-    import main
+    from ui import legacy_workbench as main
     from infrastructure.diagnostics import DiagnosticService, DiagnosticSettings
     service = DiagnosticService(tmp_path / "logs", DiagnosticSettings(enabled=False))
     monkeypatch.setattr(app, "diagnostics", service)

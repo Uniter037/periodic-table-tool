@@ -11,7 +11,7 @@ def test_graphic_edit_is_default_and_cancel_keeps_data(app):
 
 
 def test_heatmap_invalid_edit_is_atomic_and_zero_can_be_undone(app):
-    import main
+    from ui import legacy_workbench as main
     app.mode_combo.current(list(main.STYLES).index('reconstruct_percent'))
     app._on_style_change()
     app._import_text('Fe,1')

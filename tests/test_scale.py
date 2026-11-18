@@ -12,7 +12,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import pytest
 
 try:
-    import main
+    from ui import legacy_workbench as main
 except Exception:
     main = None
 

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-import main
+from ui import legacy_workbench as main
 from core import PresetStore
 from ui.preview import PreviewCanvas
 

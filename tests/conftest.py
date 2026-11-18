@@ -18,7 +18,7 @@ os.environ["PTT_USER_DIR"] = _user_files.name
 @pytest.fixture(scope="session")
 def _application():
     """整个测试会话共享一个 GUI 实例（连续创建多个 Tk 根窗口在 Windows 会失败）。"""
-    import main  # 业务导入失败必须使测试失败，不能伪装成环境跳过。
+    from ui import legacy_workbench as main  # 业务导入失败必须使测试失败，不能伪装成环境跳过。
     instance = main.App()
     instance.withdraw()
     instance._test_initial = instance._document_snapshot()
@@ -33,7 +33,7 @@ def _application():
 def app(_application, monkeypatch, tmp_path):
     """Reuse Tk but isolate document state; unexpected modal errors must fail."""
     import copy
-    import main
+    from ui import legacy_workbench as main
     from core.document import History
     instance = _application
     def unexpected(title, message, **kwargs):

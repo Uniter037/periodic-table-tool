@@ -79,7 +79,7 @@ def test_corrected_and_legacy_policy():
 
 
 def test_app_fake_object_uses_same_function():
-    from main import App
+    from ui.legacy_workbench import App
     from core.scientific import corrected_style
     payload = default_payload()
     def variable(value):

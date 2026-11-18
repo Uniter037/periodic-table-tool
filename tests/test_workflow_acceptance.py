@@ -55,7 +55,7 @@ def test_chinese_label_data_can_render(tmp_path):
 
 def test_gui_import_preview_and_export(app, monkeypatch, tmp_path):
     """Use application commands, not a separate rendering shortcut."""
-    import main
+    from ui import legacy_workbench as main
     errors = []
     monkeypatch.setattr(main.messagebox, 'showerror', lambda *args, **kw: errors.append(args))
     monkeypatch.setattr(main.messagebox, 'showinfo', lambda *args, **kw: None)
@@ -93,7 +93,7 @@ def test_gui_import_preview_and_export(app, monkeypatch, tmp_path):
 
 
 def test_gui_invalid_data_blocks_export(app, monkeypatch, tmp_path):
-    import main
+    from ui import legacy_workbench as main
     errors = []
     monkeypatch.setattr(main.messagebox, 'showerror', lambda *args, **kw: errors.append(args))
     monkeypatch.setattr(main.messagebox, 'showwarning', lambda *args, **kw: errors.append(args))

@@ -124,7 +124,7 @@ def test_corrected_coolwarm_preserves_center_and_distinguishes_values():
 
 
 def _custom_work(**overrides):
-    import main
+    from ui import legacy_workbench as main
     params = dict(cmap="coolwarm", vmin="-1", vcenter="0", vmax="1",
         fmt="科学计数法", layout="镧锕三行块（重构）", kind="热力图",
         font="DejaVu Sans", edge="黑色细线", empty="浅灰", dpi="100",
@@ -145,7 +145,7 @@ def _custom_work(**overrides):
 
 
 def test_actual_main_field_contract_without_tk(monkeypatch):
-    import main
+    from ui import legacy_workbench as main
     monkeypatch.setattr(main.tk, "Tk", lambda *a, **kw: pytest.fail("Tk must not be created"))
     work = _custom_work()
     fig = render_table(work, {"H": "0", "He": "-.6", "Li": "1"})
@@ -165,7 +165,7 @@ def test_actual_main_field_contract_without_tk(monkeypatch):
 
 
 def test_main_labels_ignore_invalid_heatmap_ranges_without_tk(monkeypatch):
-    import main
+    from ui import legacy_workbench as main
     monkeypatch.setattr(main.tk, "Tk", lambda *a, **kw: pytest.fail("Tk must not be created"))
     work = _custom_work(kind="标注图（文本）", vmin="bad", vcenter="nan", vmax="inf")
     # Direct callers may also retain an invalid, currently unused heatmap range.

@@ -16,7 +16,7 @@ import pytest
 from core import STYLES, render_table
 
 try:
-    import main
+    from ui import legacy_workbench as main
 except Exception:
     main = None
 
@@ -143,7 +143,7 @@ def test_custom_nan_and_inf_rejected(app):
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_generate_passes_dpi_and_figsize(app, monkeypatch, tmp_path):
     """generate 将 dpi 与 figsize 传给保存与渲染。"""
-    import main as _main
+    from ui import legacy_workbench as _main
     ids = list(_main.STYLES.keys())
     app.mode_combo.current(ids.index("custom"))
     app._on_style_change()

@@ -16,7 +16,7 @@ import pytest
 from core import STYLES, render_table
 
 try:
-    import main
+    from ui import legacy_workbench as main
 except Exception:
     main = None
 
@@ -86,7 +86,7 @@ def test_cbar_override_injected(app):
 @pytest.mark.skipif(not _gui_available(), reason="GUI 环境不可用")
 def test_cbar_editor_flow(app, monkeypatch):
     """编辑器：添加 → 删除 → 恢复默认。"""
-    import main as _main
+    from ui import legacy_workbench as _main
     ids = list(_main.STYLES.keys())
     app.mode_combo.current(ids.index("custom"))
     app._on_style_change()
@@ -124,7 +124,7 @@ def test_cbar_editor_flow(app, monkeypatch):
 def test_cbar_preset_roundtrip(app, tmp_path, monkeypatch):
     """预设保存/加载包含 cbar_override。"""
     import json
-    import main as _main
+    from ui import legacy_workbench as _main
     from core import PresetStore
     app.presets = PresetStore(str(tmp_path))
     app.cbar_override = {"ticks": [0.1, 0.9], "labels": ["x", "y"], "fontsize": 8}

@@ -2,7 +2,7 @@
 import json
 
 import pytest
-import main
+from ui import legacy_workbench as main
 
 
 @pytest.mark.parametrize('size', ['1024x768', '800x600'])

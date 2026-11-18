@@ -27,7 +27,7 @@ def test_gui_can_instantiate(app):
 
 def test_gui_generate_end_to_end(app, monkeypatch):
     """端到端：选模式 → 载入示例 → 生成 → 输出自动改名文件。"""
-    import main
+    from ui import legacy_workbench as main
     out_dir = tempfile.mkdtemp(prefix="pt_gui_out_")
     # 禁用弹窗与浏览器打开
     monkeypatch.setattr(main.messagebox, "askyesno", lambda *a, **k: False)
@@ -55,7 +55,7 @@ def test_gui_generate_end_to_end(app, monkeypatch):
 
 def test_gui_import_file(app, monkeypatch, tmp_path):
     """导入数据文件入口可用。"""
-    import main
+    from ui import legacy_workbench as main
     data_file = tmp_path / "data.txt"
     data_file.write_text("Ag, 0.0101\nAu = 0.0111\n", encoding="utf-8")
     monkeypatch.setattr(main.filedialog, "askopenfilename",
