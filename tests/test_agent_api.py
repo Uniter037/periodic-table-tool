@@ -135,7 +135,7 @@ def test_invalid_patch_rejected_without_writes(project, tmp_path, patch):
 
 @pytest.mark.parametrize('api_request,code', [
     ({'api_version': True, 'action': 'describe'}, 'API_VERSION'),
-    ({'api_version': 2, 'action': 'describe'}, 'API_VERSION'),
+    ({'api_version': 3, 'action': 'describe'}, 'API_VERSION'),
     ({'api_version': 1, 'action': 'nope'}, 'UNKNOWN_ACTION'),
     ({'api_version': 1, 'action': 'describe', 'typo': 1}, 'INVALID_REQUEST'),
 ])

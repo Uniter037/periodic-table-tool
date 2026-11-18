@@ -22,12 +22,17 @@ def _run(request, directory, connection, request_id):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from .styles import render_table, render_cmap_preview, CMAP_PREVIEW_LIST
         from .imaging import rasterize, save_options
 
         request = pickle.loads(request)
         mode = request["mode"]
+        engine = request.get('engine', 'v1')
+        if engine not in ('v1', 'v2'):
+            raise ValueError(f'未知绘图引擎: {engine}')
         if mode == "cmap":
+            if engine == 'v2':
+                raise ValueError('色图预览不是周期表绘图类型')
+            from .styles import render_cmap_preview, CMAP_PREVIEW_LIST
             paths = []
             for index, name in enumerate(CMAP_PREVIEW_LIST):
                 paths.extend(render_cmap_preview(directory, [name]))
@@ -43,9 +48,23 @@ def _run(request, directory, connection, request_id):
                 raise ValueError("预览需要一组数据；导出需要至少一组数据")
             result = {"files": []}
             for index, (name, data) in enumerate(items):
-                style = request["style"]
-                fig = render_table(style, data, title=request.get("title") or None,
-                                   show_cbar=request["show_cbar"], figsize=style.get("figsize", (10, 5)))
+                hit_map = request.get('hit_map')
+                if engine == 'v2':
+                    from application.plot_service import prepare_plot
+                    from infrastructure.rendering.renderer import render_plot
+                    from domain.plot_layout import build_layout
+                    spec, values, _ = prepare_plot(request['plot'], data)
+                    style = spec.to_dict()
+                    show_cbar = style['show_cbar']
+                    hit_map = {(cell.x, cell.y, cell.x + cell.width, cell.y + cell.height): cell.symbol
+                               for cell in build_layout(style['layout']).cells}
+                    fig = render_plot(spec, values)
+                else:
+                    from .styles import render_table
+                    style = request["style"]
+                    show_cbar = request['show_cbar']
+                    fig = render_table(style, data, title=request.get("title") or None,
+                                       show_cbar=show_cbar, figsize=style.get("figsize", (10, 5)))
                 try:
                     from .layout_diagnostics import inspect_layout, layout_warnings
                     issues = inspect_layout(fig) if style.get('check_label_overlap', True) else []
@@ -53,7 +72,7 @@ def _run(request, directory, connection, request_id):
                         # Keep physical layout, cap only the preview raster resolution.
                         fig.set_dpi(min(style.get("dpi", 100), 100,
                                         1600 / max(fig.get_size_inches())))
-                        source, hits = rasterize(fig, request.get("hit_map"),
+                        source, hits = rasterize(fig, hit_map,
                                                  style.get("bbox_tight", True),
                                                  transparent=style.get("transparent", False))
                         from io import BytesIO
@@ -63,7 +82,7 @@ def _run(request, directory, connection, request_id):
                             result['layout_issues'] = issues
                             result['layout_warnings'] = layout_warnings(issues)
                             result["cbar_box"] = (list(fig.axes[1].get_position().bounds)
-                                if request["show_cbar"] and style.get("kind") == "heatmap" and len(fig.axes) > 1 else None)
+                                if show_cbar and style.get("kind") == "heatmap" and len(fig.axes) > 1 else None)
                         source.close()
                     else:
                         fmt = request["format"].lower()

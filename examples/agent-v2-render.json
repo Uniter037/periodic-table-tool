@@ -1,0 +1,23 @@
+{
+  "api_version": 2,
+  "action": "render",
+  "plot": {
+    "title": "Independent rendering engine",
+    "layout": "expanded",
+    "cmap": ["custom", [[0, "#234c75"], [0.5, "#ffffff"], [1, "#a32745"]]],
+    "norm": ["twoslope", -1, 0, 1],
+    "fmt": "3f",
+    "figsize": [10, 5],
+    "dpi": 150,
+    "cbar": {
+      "ticks": [-1, -0.5, 0, 0.5, 1],
+      "labels": ["-1.0", "-0.5", "0", "+0.5", "+1.0"],
+      "visible": [true, true, true, true, true],
+      "fontsize": 8
+    }
+  },
+  "data": {"H": 0, "C": -0.5, "O": 0.5, "Ti": -0.8, "Ni": 0.8},
+  "output_dir": "output/agent-v2",
+  "formats": ["svg", "png"],
+  "base": "independent-engine"
+}

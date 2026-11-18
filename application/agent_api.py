@@ -413,6 +413,9 @@ def _execute(request):
 
 def execute(request):
     """Execute one JSON-serializable request, returning a JSON response envelope."""
+    if isinstance(request, dict) and type(request.get('api_version')) is int and request['api_version'] == 2:
+        from .agent_api_v2 import execute as execute_v2
+        return execute_v2(request)
     response = {'api_version': API_VERSION}
     if isinstance(request, dict) and isinstance(request.get('request_id'), (str,int)):
         response['request_id'] = request['request_id']

@@ -84,6 +84,10 @@ flowchart TD
 | `ui/theme.py`（源码界面改版） | 集中定义浅色主题、强调色与随界面缩放的字体/控件样式，不修改绘图字体或导出参数 |
 | `ui/settings_panel.py`（源码界面改版） | 可折叠设置分组和局部搜索；定位时展开分组、选择页签并聚焦字段，不重建控件或重写参数 |
 | `ui/layout_issues.py`（源码界面改版） | 展示渲染诊断并通过回调定位有效元素；每次更新替换旧行及回调映射，不执行排版修正 |
+| `domain/plot_spec.py`, `domain/plot_layout.py`（2.0 源码开发） | 无 GUI/绘图库依赖的完整配置契约和不可变元素几何；详见 `PLOT-SPEC-V2.md` |
+| `infrastructure/rendering/`（2.0 源码开发） | 独立 Agg 渲染、颜色、色条和文字；不导入旧样式注册表、旧参数修正层或旧布局 |
+| `application/plot_service.py`, `plot_presets.py`, `agent_api_v2.py` | 新配置驱动的绘图用例、普通预设和版本化文件 API；由现有 Agent 入口按 api_version 分发 |
+| `application/project_migrations.py` | schema 1 → 2 的显式、可报告迁移边界；仅迁移旧项目时读取旧样式，不参与新项目渲染 |
 | `application/project_codec.py` | 默认 payload、完整校验、从项目解析渲染 style；无 Tk 依赖 |
 | `application/agent_api.py` | 版本化请求、patch、文件指纹、写入保护、导出、统一响应 |
 | `application/excel_import.py` | 读取协调、显式区域映射、诊断、生成预览 DTO；只读，不直接提交 GUI |
