@@ -1,6 +1,8 @@
 # 周期表绘图工作台：架构与工程交接
 
-> 2026-11-18 源码更新：默认桌面已切换到独立 PlotSpec 工作台，详见 [新版桌面结构与使用](DESKTOP-V2.md)、[重构进度](RENDERER-MODERNIZATION.md) 和 [Agent v2](AGENT-V2.md)。以下 v1 架构段落描述旧版兼容实现；已发布 EXE 仍为 v1.9.0。
+> 2026-11-19：默认展示层已迁入 `ui/qt/`，保留 Python 应用/领域/渲染服务。菜单、搜索与快捷键由统一 CommandRegistry 驱动，详见 [Qt 工作台结构与使用](QT-WORKBENCH.md)。旧 Tk 界面通过显式参数回退，不是默认链路。
+
+> 2026-11-18 源码更新：默认桌面已切换到独立 PlotSpec 工作台，详见 [新版桌面结构与使用](DESKTOP-V2.md)、[重构进度](RENDERER-MODERNIZATION.md) 和 [Agent v2](AGENT-V2.md)。以下 v1 架构段落描述旧版兼容实现；稳定版为 v1.9.0，Qt 预览发行见 v2.0.0-alpha.1。
 
 > 基线：v1.8.0，提交 `a1d79f2d7e127af1ef86efe827f8d8c97c20e2c4`；核对日期：2026-11-08。本文依据当前源码描述已实现行为。交接文档自身的新增不属于该基线提交。
 >

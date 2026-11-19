@@ -23,6 +23,7 @@ def test_archive_contents_and_reproducibility(tmp_path):
             assert {p.relative_to(ROOT).as_posix() for p in (ROOT / package).rglob("*.py")} <= files
         assert len([p for p in files if p.startswith("tests/fixtures/originals/") and p.endswith(".py")]) == 12
         assert not any("__pycache__" in p for p in files)
+        assert "docs/screenshots/qt-workbench.png" in files
 
 
 def test_new_ui_module_is_discovered(tmp_path):
@@ -37,7 +38,8 @@ def test_new_ui_module_is_discovered(tmp_path):
 def test_version_consistent():
     import re
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
-    assert version.group(1) == make_dist.VERSION == "1.9.0"
+    from packaging.version import Version
+    assert Version(version.group(1)) == Version(make_dist.VERSION)
 
 
 def test_fixture_provenance():
@@ -100,3 +102,17 @@ def test_examples_allowlist(tmp_path):
         "periodic-table-tool/examples/nested/" + name
         for name in ("heatmap.txt", "labels.txt", "data.json", "data.csv", "data.tsv")
     }
+
+
+def test_exe_build_does_not_resolve_dlls_from_unrelated_tools(monkeypatch, tmp_path):
+    import os
+    original = str(tmp_path / 'poppler' / 'bin')
+    monkeypatch.setenv('PATH', original)
+    monkeypatch.setenv('SystemRoot', str(tmp_path / 'Windows'))
+    python = tmp_path / 'venv' / 'Scripts' / 'python.exe'
+    environment = build_exe.isolated_build_environment(python)
+    paths = environment['PATH'].split(os.pathsep)
+    assert original not in paths
+    assert str(python.parent) in paths
+    assert str(tmp_path / 'Windows' / 'System32') in paths
+    assert os.environ['PATH'] == original

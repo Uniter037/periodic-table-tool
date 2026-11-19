@@ -122,6 +122,6 @@ Agent v2 JSON ─┼─> application 绘图用例 ─> PlotSpec 校验 ─> 渲�
 - 后台 RenderJob 接受 engine=v2、plot 配置及 data；预览自动生成118元素命中区域，继续采用独立进程、请求失效和取消机制。
 - 合成示例 `examples/agent-v2-render.json` 已通过真实 CLI 生成 PNG/SVG，并进行图像检查。
 
-桌面由 WorkbenchSession 管理 schema 2 状态，PlotSettingsPanel 负责参数输入，workbench_v2 负责交互和后台任务。默认入口不导入旧绘图模块；旧 GUI 测试显式引用 ui.legacy_workbench。预设、草稿、日志与旧版隔离，保存检查版本冲突。详见 `DESKTOP-V2.md`。
+桌面由 WorkbenchSession 管理 schema 2 状态。2026-11-19 默认展示层已迁到 `ui/qt/`：统一命令注册、功能区、工作表、属性面板与独立像素预览；上一版 `workbench_v2` 作为显式 Tk 回退。默认入口不导入 Tk 或旧绘图模块；旧 GUI 测试显式引用 ui.legacy_workbench。详见 `QT-WORKBENCH.md`。
 
 剩余阶段是 4 的最终清理及 5 的分发验收：补齐迁移文档变体的操作入口、完成替代验收后移除旧分支和分发原件、构建新版 EXE。当前没有完成整体2.0，也没有发布新版；原始参考测试仍保留作为迁移期证据。

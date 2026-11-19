@@ -1,6 +1,6 @@
 # 独立桌面工作台（2.0 开发中）
 
-源码默认入口为 `python main.py`。本次不是发行版，现有 v1.9.0 EXE 未更新。
+2026-11-19 更新：源码默认入口 `python main.py` 已改为 [Qt 工作台](QT-WORKBENCH.md)。本文记录上一版 Tk/schema 2 适配器，通过 `python main.py --ui=tk` 启动，供迁移期回归使用。Qt 预览版为 v2.0.0-alpha.1，v1.9.0 保留为稳定版。
 
 ## 日常绘图
 

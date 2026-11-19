@@ -493,7 +493,7 @@ class App(tk.Tk):
                     self.session.import_excel(preview)
                     self._sync()
                     self.schedule_preview()
-                ExcelImportDialog(self, service.sheets(), service.preview, commit)
+                ExcelImportDialog(self, service.sheets, service.preview, commit)
             except (ValueError, OSError) as exc:
                 self._invalid(exc)
         else:

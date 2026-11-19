@@ -70,8 +70,15 @@ def _run(request, directory, connection, request_id):
                     issues = inspect_layout(fig) if style.get('check_label_overlap', True) else []
                     if mode == "preview":
                         # Keep physical layout, cap only the preview raster resolution.
-                        fig.set_dpi(min(style.get("dpi", 100), 100,
-                                        1600 / max(fig.get_size_inches())))
+                        budget = request.get('preview_max_pixels')
+                        if budget is None:
+                            preview_dpi = min(style.get("dpi", 100), 100,
+                                              1600 / max(fig.get_size_inches()))
+                        else:
+                            if type(budget) is not int or not 400 <= budget <= 3200:
+                                raise ValueError('preview_max_pixels must be an integer from 400 to 3200')
+                            preview_dpi = min(300, budget / max(fig.get_size_inches()))
+                        fig.set_dpi(preview_dpi)
                         source, hits = rasterize(fig, hit_map,
                                                  style.get("bbox_tight", True),
                                                  transparent=style.get("transparent", False))

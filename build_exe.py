@@ -20,6 +20,7 @@ REQUIREMENTS = (
     "pillow==12.3.0", "pyparsing==3.3.2", "python-dateutil==2.9.0.post0",
     "six==1.17.0",
     "resvg_py==0.5.0",
+    "PySide6-Essentials==6.12.0", "shiboken6==6.12.0",
 )
 
 
@@ -44,6 +45,20 @@ def pyinstaller_command(python):
     return command
 
 
+def isolated_build_environment(python):
+    """Do not let unrelated tools on PATH supply same-named dependency DLLs.
+
+    In particular Poppler's icuuc.dll has version-suffixed exports, unlike the
+    Windows ICU API Qt uses. Shipping it at the archive root breaks QtCore.
+    Restrict only the child build environment; never edit the user's PATH.
+    """
+    windows = Path(os.environ.get('SystemRoot', 'C:/Windows'))
+    return dict(os.environ, PYTHONHASHSEED='0', SOURCE_DATE_EPOCH='1577836800',
+        PYINSTALLER_CONFIG_DIR=str(ROOT / 'build' / 'pyinstaller-cache'),
+        PATH=os.pathsep.join(map(str, (Path(python).parent, Path(sys.base_prefix),
+                                      windows / 'System32', windows))))
+
+
 def main():
     if (sys.platform != "win32" or platform.python_implementation() != "CPython"
             or sys.version_info[:3] != (3, 14, 2) or platform.machine().lower() not in ("amd64", "x86_64")):
@@ -52,8 +67,7 @@ def main():
     environment = ROOT / ".venv-build-exe"
     venv.EnvBuilder(with_pip=True).create(environment)
     python = environment / "Scripts" / "python.exe"
-    env = dict(os.environ, PYTHONHASHSEED="0", SOURCE_DATE_EPOCH="1577836800",
-               PYINSTALLER_CONFIG_DIR=str(ROOT / "build" / "pyinstaller-cache"))
+    env = isolated_build_environment(python)
     subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
                     "--only-binary=:all:", *REQUIREMENTS], cwd=ROOT, env=env, check=True)
     subprocess.run([str(python), "-m", "pip", "check"], cwd=ROOT, env=env, check=True)

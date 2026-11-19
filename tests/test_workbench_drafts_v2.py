@@ -27,6 +27,7 @@ from types import SimpleNamespace
 def main():
     root, scenario, directory = sys.argv[1:]
     sys.path.insert(0, root)
+    sys.argv.append('--ui=tk')  # Default startup now selects Qt.
     import tkinter as tk
     from tkinter import ttk
     from ui import workbench_v2 as gui

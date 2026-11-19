@@ -17,10 +17,10 @@ def test_import_main_uses_v2_without_legacy_engine():
     isolated('''
 import sys
 import main
-from ui.workbench_v2 import App, main as desktop_main
+from ui.qt.workbench import MainWindow as App, main as desktop_main
 assert main.App is App
 assert main.main is desktop_main
-assert not {'ui.legacy_workbench', 'core.styles', 'core.options',
+assert not {'tkinter', 'ui.legacy_workbench', 'core.styles', 'core.options',
             'core.scientific', 'core.ptable', 'application.project_codec'} & set(sys.modules)
 ''')
 
@@ -82,13 +82,27 @@ def test_normal_start_calls_v2_after_freeze_support():
 import multiprocessing, runpy, sys, types
 events = []
 multiprocessing.freeze_support = lambda: events.append('freeze')
-module = types.ModuleType('ui.workbench_v2')
-module.App = object
+module = types.ModuleType('ui.qt.workbench')
+module.MainWindow = object
 module.main = lambda: events.append('v2')
-sys.modules['ui.workbench_v2'] = module
+sys.modules['ui.qt.workbench'] = module
 sys.argv = ['main.py']
-runpy.run_path('main.py', run_name='__main__')
+try:
+    runpy.run_path('main.py', run_name='__main__')
+except SystemExit as exc:
+    assert exc.code is None
 assert events == ['freeze', 'v2'], events
+''')
+
+
+def test_explicit_tk_fallback_does_not_load_qt():
+    isolated('''
+import sys
+sys.argv = ['main.py', '--ui=tk']
+import main
+from ui.workbench_v2 import App
+assert main.App is App
+assert not any(name.startswith('PySide6') for name in sys.modules)
 ''')
 
 

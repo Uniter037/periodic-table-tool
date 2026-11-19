@@ -41,3 +41,19 @@ def test_native_preview_matches_export_and_maps_all_elements(tight):
             assert shown.getpixel((int((left + right) / 2), int((top + bottom) / 2)))[:3] == (230, 63, 55)
     finally:
         job.cancel()
+
+
+def test_high_dpi_preview_budget_does_not_change_export_geometry():
+    task = {'engine': 'v2', 'mode': 'preview', 'data': {'Ni': '.82'},
+            'plot': {'dpi': 72, 'figsize': [8, 4], 'bbox_tight': False},
+            'preview_max_pixels': 1600}
+    job = RenderJob()
+    try:
+        result = run(job, task)
+        with Image.open(BytesIO(result['png'])) as shown:
+            assert shown.size == (1600, 800)
+        result = run(job, {**task, 'mode': 'export', 'format': 'png'})
+        with Image.open(result['files'][0][0]) as saved:
+            assert saved.size == (576, 288)
+    finally:
+        job.cancel()

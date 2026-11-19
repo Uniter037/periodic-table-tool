@@ -96,16 +96,60 @@ def inspect_outputs(folder: Path, marker: Path) -> dict:
     return result
 
 
+def inspect_native_agent(target, root, environment, options, timeout):
+    """Verify the schema-2 API in the actual frozen executable, independent of Tk."""
+    counter = 0
+    def call(request, expected_ok=True):
+        nonlocal counter
+        counter += 1
+        source, response = root / f'v2-request-{counter}.json', root / f'v2-response-{counter}.json'
+        source.write_text(json.dumps({'api_version': 2, **request}), encoding='utf-8')
+        result = subprocess.run([str(target), '--agent-request', str(source), '--agent-response', str(response)],
+            cwd=root, env=environment, timeout=min(timeout, 60), **options)
+        payload = json.loads(response.read_text(encoding='utf-8'))
+        if payload.get('ok') is not expected_ok or result.returncode != (0 if expected_ok else 2):
+            raise RuntimeError(f'Native agent failed: {payload}')
+        return payload
+    description = call({'action': 'describe'})['result']
+    if 'render' not in description['actions']:
+        raise RuntimeError('Native agent render capability missing')
+    project = root / 'native.ptproj'
+    created = call({'action': 'create', 'project': str(project), 'plot': {'norm': ['twoslope', -1, 0, 1]},
+                    'data': {'Ni': '.820', 'H': '0.000'}})['result']
+    updated = call({'action': 'update', 'project': str(project), 'expected_revision': created['revision'],
+                    'patch': {'data': {'Ti': '-.640'}}})['result']
+    conflict = call({'action': 'update', 'project': str(project), 'expected_revision': created['revision'],
+                    'patch': {'data': {'Ni': 999}}}, False)
+    if conflict['error']['code'] != 'REVISION_CONFLICT':
+        raise RuntimeError('Native stale write not rejected')
+    inspected = call({'action': 'inspect', 'project': str(project)})['result']
+    document = inspected['document']
+    if document['schema'] != 2 or document['current']['data'] != {'Ni': '.820', 'H': '0.000', 'Ti': '-.640'}:
+        raise RuntimeError('Native document lost raw measurements')
+    exported = call({'action': 'export', 'project': str(project), 'expected_revision': updated['revision'],
+        'output_dir': str(root / 'native_exports'), 'formats': ['svg', 'png', 'pdf']})['result']
+    if len(exported['files']) != 3 or any(not Path(row['path']).is_file() for row in exported['files']):
+        raise RuntimeError('Native export incomplete')
+    rendered = call({'action': 'render', 'plot': document['current']['plot'], 'data': document['current']['data'],
+        'output_dir': str(root / 'native_render'), 'formats': ['svg']})['result']
+    if len(rendered['files']) != 1 or not Path(rendered['files'][0]['path']).is_file():
+        raise RuntimeError('Native stateless render incomplete')
+    return {'passed': True, 'commands': counter, 'raw_values_preserved': True, 'stale_write_rejected': True}
+
+
 def verify(executable: Path, timeout: float = 180) -> dict:
     executable = executable.resolve(strict=True)
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="ptt-exe-acceptance-") as directory:
+    # Windows scanners may briefly retain a handle after a terminated bootloader.
+    # Preserve the actual acceptance failure instead of masking it with cleanup.
+    with tempfile.TemporaryDirectory(prefix="ptt-exe-acceptance-", ignore_cleanup_errors=True) as directory:
         root = Path(directory)
         target = root / "PeriodicTableTool.exe"
         shutil.copy2(executable, target)
         outputs = root / "exports"
         environment = dict(os.environ, PTT_SMOKE="1",
                            PTT_SMOKE_EXPORT_DIR=str(outputs),
+                           PTT_SMOKE_MARKER=str(root / 'smoke_progress.txt'),
                            PTT_USER_DIR=str(root / "user"))
         options = {}
         if os.name == "nt":
@@ -128,10 +172,12 @@ def verify(executable: Path, timeout: float = 180) -> dict:
             raise RuntimeError(f"EXE exited with code {code}")
         exports = inspect_outputs(outputs, root / "smoke_progress.txt")
         agent = inspect_agent_interface(target, root, environment, options, timeout)
+        native_agent = inspect_native_agent(target, root, environment, options, timeout)
         return {"executable": str(executable),
                 "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "elapsed_seconds": round(time.monotonic() - started, 2),
-                "exports": exports, "agent_interface": agent, "passed": True}
+                "exports": exports, "agent_interface": agent, "native_agent_interface": native_agent,
+                "passed": True}
 
 
 def main():

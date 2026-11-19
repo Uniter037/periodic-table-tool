@@ -33,6 +33,7 @@ def native_only():
 def main():
     root, scenario, directory = sys.argv[1:]
     sys.path.insert(0, root)
+    sys.argv.append('--ui=tk')  # This suite verifies the explicit migration fallback.
     import main as entry
     from ui import workbench_v2 as gui
     assert entry.App is gui.App
